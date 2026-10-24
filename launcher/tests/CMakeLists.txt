@@ -1,0 +1,20 @@
+find_package(Qt6 COMPONENTS Test REQUIRED)
+
+# add_qt_test(<name> <sources...>)
+# Builds one Qt Test executable against the launcher's core library and registers it with CTest.
+macro(add_qt_test name)
+    add_executable(${name} ${ARGN})
+    target_link_libraries(${name} PRIVATE bbpc_launcher_core Qt6::Core Qt6::Test)
+    add_test(NAME launcher.${name} COMMAND ${name})
+    set_tests_properties(launcher.${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endmacro()
+
+add_qt_test(tst_capabilities tst_capabilities.cpp)
+add_qt_test(tst_gameEnvironment tst_gameEnvironment.cpp)
+add_qt_test(tst_launcherSettings tst_launcherSettings.cpp)
+add_qt_test(tst_onlineAddresses tst_onlineAddresses.cpp)
+add_qt_test(tst_outputSizes tst_outputSizes.cpp)
+add_qt_test(tst_portIni tst_portIni.cpp)
+add_qt_test(tst_portPaths tst_portPaths.cpp)
+add_qt_test(tst_profiles tst_profiles.cpp)
+add_qt_test(tst_upscalerAssets tst_upscalerAssets.cpp)

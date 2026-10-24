@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=bbpc
+GenericName=Bloodborne launcher
+Comment=Play Bloodborne natively on Linux: game folder, settings, mods and online play
+Exec=bbpc
+Icon=io.github.wheat32.bbpc
+Terminal=false
+Categories=Game;
+Keywords=Bloodborne;PS4;port;
+StartupWMClass=bbpc

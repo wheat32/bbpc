@@ -1,0 +1,49 @@
+# Arch Linux packages for building and playing bbpc (packaging/arch/install-deps.sh installs
+# them; the CI reads this list too). Header-only libraries are used when installed and downloaded
+# (pinned releases) at the first configuration otherwise: robin-map and nlohmann-json below, and
+# magic_enum, VulkanMemoryAllocator and xbyak, which are only in the AUR.
+
+# Toolchain
+base-devel
+git
+cmake
+ninja
+pkgconf
+python
+glslang
+spirv-tools
+
+# The game's libraries (gpu/, bb-probe); robin-map is header-only (downloaded when missing)
+vulkan-headers
+vulkan-icd-loader
+sdl3
+ffmpeg
+boost
+fmt
+robin-map
+xxhash
+zydis
+miniz
+libx11
+libxcb
+wayland
+alsa-lib
+
+# The online module (gpu/bbnet20): without these the port builds without it and plays offline;
+# nlohmann-json is header-only (downloaded when missing)
+protobuf
+nlohmann-json
+openssl
+zlib
+miniupnpc
+
+# The launcher
+qt6-base
+qt6-svg
+qt6-wayland
+
+# Optional tools. spirv-cross: faster FSR 4 post passes (tools/fsr4_optimize.sh; without it the
+# original passes run). mingw-w64-gcc: FSR 4.1.1 from your own AMD DLL (tools/fsr4cap builds
+# fsr4cap.exe with it) and the AppImage
+spirv-cross
+mingw-w64-gcc

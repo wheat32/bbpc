@@ -1,0 +1,66 @@
+# The layout rules of AGENTS.md (GNU/Allman braces, indented case labels, 4 spaces): CLion and
+# clang-format apply them to the port's code. The launcher (launcher/.clang-format) is formatted
+# by hand, as the author's other Qt apps are. Vendored code (third_party/, the online module's
+# shadPS4, BBSC and bbhost sources) has its own .clang-format files turning this off.
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: Latest
+ColumnLimit: 120
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel: true
+  AfterClass: true
+  AfterControlStatement: Always
+  AfterEnum: true
+  AfterExternBlock: true
+  AfterFunction: true
+  AfterNamespace: true
+  AfterStruct: true
+  AfterUnion: true
+  BeforeCatch: true
+  BeforeElse: true
+  BeforeLambdaBody: true
+  BeforeWhile: true
+  IndentBraces: false
+  SplitEmptyFunction: true
+  SplitEmptyRecord: true
+  SplitEmptyNamespace: true
+
+IndentCaseLabels: true
+IndentCaseBlocks: false
+IndentExternBlock: NoIndent
+NamespaceIndentation: None
+PointerAlignment: Left
+ReferenceAlignment: Left
+SpaceBeforeParens: ControlStatements
+Cpp11BracedListStyle: true
+
+# Only an else-less if with a bare return/break/continue stays on one line, without braces.
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: InlineOnly
+AllowShortLambdasOnASingleLine: Empty
+AllowShortEnumsOnASingleLine: false
+
+AlwaysBreakTemplateDeclarations: Yes
+BreakConstructorInitializers: BeforeColon
+PackConstructorInitializers: NextLine
+AllowAllParametersOfDeclarationOnNextLine: true
+BinPackArguments: true
+BinPackParameters: true
+
+# Keep what the code says about itself: no reordered includes, no rewrapped comments.
+SortIncludes: Never
+IncludeBlocks: Preserve
+ReflowComments: false
+FixNamespaceComments: true
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1

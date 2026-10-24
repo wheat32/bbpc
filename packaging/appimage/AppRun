@@ -1,0 +1,38 @@
+#!/bin/sh
+# AppRun of the bbpc AppImage. The AppImage runtime sets $APPDIR (where the image is mounted)
+# and $APPIMAGE (the .AppImage file) before starting it; an extracted AppDir works too.
+#
+# The port lives in usr/share/bbpc with its prebuilt binaries (run.sh plays them with
+# BB_PREBUILT=1); they find the bundled libraries through their RUNPATH, so nothing is put on
+# LD_LIBRARY_PATH and the host's own programs (bash, Python, Proton, the Vulkan drivers) stay
+# untouched. Saves, bbport.ini and the generated files go to ~/.local/share/bbpc (BB_DATA_DIR).
+#   Bloodborne-bbpc.AppImage                the launcher
+#   Bloodborne-bbpc.AppImage --play         the game with the launcher's saved settings
+#   Bloodborne-bbpc.AppImage --build-fsr411 <DLL> [loader DLL]
+#   Bloodborne-bbpc.AppImage --vulkan-info  the host's Vulkan drivers, for bug reports
+if [ -z "${APPDIR:-}" ]; then
+    APPDIR=$(dirname "$(readlink -f "$0")")
+fi
+export APPDIR
+export BB_PREBUILT=1
+export BBPC_PORT_DIR="$APPDIR/usr/share/bbpc"
+export BB_DATA_DIR="${BB_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bbpc}"
+mkdir -p "$BB_DATA_DIR"
+
+# The bundled Qt plugins (the window's platform plugins: xcb, wayland).
+export QT_PLUGIN_PATH="$APPDIR/usr/plugins"
+export QT_QPA_PLATFORM_PLUGIN_PATH="$APPDIR/usr/plugins/platforms"
+
+if [ "${1:-}" = "--vulkan-info" ]; then
+    if ! command -v vulkaninfo >/dev/null 2>&1; then
+        echo "vulkaninfo not found: install your distribution's vulkan-tools (Arch: vulkan-tools)" >&2
+        exit 1
+    fi
+    VK_LOADER_DEBUG=${VK_LOADER_DEBUG:-error,warn,driver} exec vulkaninfo --summary
+fi
+
+if ! command -v python3 >/dev/null 2>&1 || ! command -v bash >/dev/null 2>&1; then
+    echo "bbpc needs bash and Python 3.10 or newer on the system (they prepare the game image)." >&2
+    exit 1
+fi
+exec "$APPDIR/usr/bin/bbpc" "$@"

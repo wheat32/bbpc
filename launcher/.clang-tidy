@@ -1,0 +1,17 @@
+# The root rules plus AGENTS.md's magic numbers (0, 1 and 2 are the neutral zero and the plain
+# index arithmetic it allows) and its pointer tests (== nullptr, never a pointer as a condition).
+InheritParentConfig: true
+Checks: >
+  readability-magic-numbers,
+  readability-implicit-bool-conversion
+CheckOptions:
+  - key: readability-implicit-bool-conversion.AllowPointerConditions
+    value: false
+  - key: readability-implicit-bool-conversion.AllowIntegerConditions
+    value: true
+  - key: readability-magic-numbers.IgnoredIntegerValues
+    value: '0;1;2'
+  - key: readability-magic-numbers.IgnoredFloatingPointValues
+    value: '0.0;1.0'
+  - key: readability-magic-numbers.IgnorePowersOf2IntegerValues
+    value: false

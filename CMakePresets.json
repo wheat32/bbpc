@@ -1,0 +1,90 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 25,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "FETCHCONTENT_UPDATES_DISCONNECTED": "ON"
+            }
+        },
+        {
+            "name": "release",
+            "displayName": "Release (what run.sh plays)",
+            "description": "Optimized build with debug info and LTO in out/, the layout run.sh and the launcher use.",
+            "inherits": "base",
+            "binaryDir": "${sourceDir}/out",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "BB_LTO": "ON"
+            }
+        },
+        {
+            "name": "debug",
+            "displayName": "Debug",
+            "description": "Unoptimized build with the tests in out-debug/ (BB_BUILD_DIR=out-debug bash run.sh plays it).",
+            "inherits": "base",
+            "binaryDir": "${sourceDir}/out-debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "BB_LTO": "OFF",
+                "BBPC_BUILD_TESTS": "ON"
+            }
+        },
+        {
+            "name": "launcher",
+            "displayName": "Launcher only",
+            "description": "The Qt launcher and its tests alone, without the game's dependencies.",
+            "inherits": "base",
+            "binaryDir": "${sourceDir}/out-launcher",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "BBPC_BUILD_PORT": "OFF",
+                "BBPC_BUILD_TESTS": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "release",
+            "configurePreset": "release"
+        },
+        {
+            "name": "debug",
+            "configurePreset": "debug"
+        },
+        {
+            "name": "launcher",
+            "configurePreset": "launcher"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "debug",
+            "configurePreset": "debug",
+            "output": {
+                "outputOnFailure": true
+            },
+            "environment": {
+                "QT_QPA_PLATFORM": "offscreen"
+            }
+        },
+        {
+            "name": "launcher",
+            "configurePreset": "launcher",
+            "output": {
+                "outputOnFailure": true
+            },
+            "environment": {
+                "QT_QPA_PLATFORM": "offscreen"
+            }
+        }
+    ]
+}

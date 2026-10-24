@@ -1,0 +1,13 @@
+<RCC>
+    <qresource prefix="/">
+        <file>style_dark.qss</file>
+        <file>style_light.qss</file>
+        <file alias="version.json">../version.json</file>
+    </qresource>
+    <qresource prefix="/assets">
+        <file alias="app-icon.svg">assets/io.github.wheat32.bbpc.svg</file>
+        <file alias="chevron-down.svg">assets/chevron-down.svg</file>
+        <file alias="chevron-up.svg">assets/chevron-up.svg</file>
+        <file alias="eye.svg">assets/eye.svg</file>
+    </qresource>
+</RCC>

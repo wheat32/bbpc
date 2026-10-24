@@ -1,0 +1,28 @@
+# The AGENTS.md code style rules clang-tidy can check, for CLion (it shows them as you type) and
+# for `clang-tidy -p out <file>`. Layout is clang-format's (.clang-format). Rules no check covers:
+# no if-init, explicit types instead of auto, `== false` instead of `!` (readability-simplify-
+# boolean-expr would ask for the opposite, so it stays off). Vendored code turns this off with its
+# own .clang-tidy files. The launcher adds the magic-number and implicit-bool checks
+# (launcher/.clang-tidy): in the emulation code integers and Vulkan's Bool32 become bool all the
+# time, which AGENTS.md allows.
+Checks: >
+  -*,
+  cppcoreguidelines-avoid-do-while,
+  modernize-use-nullptr,
+  readability-braces-around-statements,
+  readability-identifier-naming
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*/(src|gpu|launcher|tests|tools)/.*'
+CheckOptions:
+  # do { } while (false) in macro definitions is the statement idiom, not a loop.
+  - key: cppcoreguidelines-avoid-do-while.IgnoreMacros
+    value: true
+  # A one-line body may go without braces: AGENTS.md allows only a bare return;, return true;,
+  # return false;, break; or continue; there, which the check cannot tell apart.
+  - key: readability-braces-around-statements.ShortStatementLines
+    value: 1
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: UPPER_CASE
+  # magic_enum's enum_range<E> customization: names the library looks up.
+  - key: readability-identifier-naming.ConstexprVariableIgnoredRegexp
+    value: '^(min|max|is_flags)$'

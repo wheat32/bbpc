@@ -1,0 +1,3 @@
+# Vendored code keeps its own style: none of the root checks.
+InheritParentConfig: false
+Checks: "-*"

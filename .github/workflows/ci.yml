@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - dev
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and Test x86_64 (Arch Linux)
+    runs-on: ubuntu-26.04
+    # bbpc targets Arch Linux: the build runs in Arch's own container, with Arch's packages
+    # (packaging/arch/packages.txt), on GitHub's Ubuntu runner.
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install git
+        run: pacman -Syu --noconfirm --needed git
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Trust the checkout
+        # The container's root user does not own the workspace; git refuses to work in it otherwise.
+        run: git config --global --add safe.directory '*'
+
+      - name: Install build dependencies
+        run: |
+          bash packaging/arch/install-deps.sh
+          # Lavapipe: a software Vulkan driver for the tests that create a Vulkan instance.
+          pacman -S --noconfirm --needed vulkan-swrast
+
+      - name: Configure
+        run: cmake --preset release -DBBPC_BUILD_TESTS=ON -DBB_LTO=OFF
+
+      - name: Build
+        run: cmake --build --preset release --parallel
+
+      - name: Run tests
+        run: ctest --test-dir out --output-on-failure --parallel $(nproc)
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Confirm binaries exist
+        run: |
+          test -f out/bb-probe
+          test -f out/bb-gpu-capabilities
+          test -f out/gpu/libbbgpu.so
+          test -f out/gpu/libbbnet20.so
+          test -f out/launcher/bbpc
+
+      - name: Package the installed tree
+        run: |
+          DESTDIR="$PWD/stage" cmake --install out --prefix /usr
+          tar -czf bbpc-linux-x86_64.tar.gz -C stage/usr .
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-x86_64-ci
+          path: bbpc-linux-x86_64.tar.gz
+          retention-days: 7
+
+  build-appimage:
+    name: Build AppImage x86_64 (Arch Linux)
+    runs-on: ubuntu-26.04
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install git
+        run: pacman -Syu --noconfirm --needed git
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Trust the checkout
+        run: git config --global --add safe.directory '*'
+
+      - name: Install dependencies
+        run: |
+          bash packaging/arch/install-deps.sh
+          pacman -S --noconfirm --needed wget file
+
+      - name: Build AppImage x86_64
+        run: bash packaging/appimage/build-appimage.sh
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+
+      - name: Confirm AppImage exists
+        run: ls dist/Bloodborne-bbpc-*-x86_64.AppImage
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: appimage-x86_64-ci
+          path: dist/Bloodborne-bbpc-*-x86_64.AppImage
+          retention-days: 7

@@ -1,0 +1,65 @@
+#pragma once
+
+#include <QList>
+#include <QString>
+
+// Choices - the values the launcher offers for the port's settings. Labels and notes are marked
+// for translation (context "Choices") and translated when shown: label() and note().
+namespace Choices
+{
+    // One entry of a drop-down: its label, the value stored, and an optional note shown under the
+    // row's title while it is selected (the labels stay short, so the selected one is explained).
+    struct Choice
+    {
+        const char* label;
+        const char* value;
+        const char* note = nullptr;
+    };
+
+    QString label(const Choice& choice);
+    QString note(const Choice& choice);
+
+    // The index of value in choices, or 0 (the first entry is the default).
+    int indexOf(const QList<Choice>& choices, const QString& value);
+
+    const QList<Choice>& upscalers();
+    const QList<Choice>& presets();
+    const QList<Choice>& memoryModels();
+    const QList<Choice>& gameLanguages();
+    const QList<Choice>& liveResolution();
+    const QList<Choice>& presentModes();
+    const QList<Choice>& modelDetail();
+    const QList<Choice>& fpsModes();
+    const QList<Choice>& drawPipe();
+    const QList<Choice>& readbacks();
+    const QList<Choice>& preupload();
+    const QList<Choice>& onlinePools();
+    const QList<Choice>& themes();
+
+    // A game effect: a patch applied at start, switched in bbport.ini.
+    struct Effect
+    {
+        const char* key;
+        const char* title;
+        bool defaultOn;
+        const char* note = nullptr;
+    };
+
+    const QList<Effect>& effects();
+    QString title(const Effect& effect);
+    QString note(const Effect& effect);
+
+    // One input of the game (runtime_pad.c): bbport.ini key.<name>= / pad.<name>= replace the
+    // default; no line keeps it. Keyboard defaults are Dark Souls III-like ("Left Shift+Mouse
+    // Left" is a chord); gamepad buttons use SDL's names. padDefault nullptr: no gamepad binding.
+    struct Control
+    {
+        const char* name;
+        const char* label;
+        const char* keyDefault;
+        const char* padDefault;
+    };
+
+    const QList<Control>& controls();
+    QString label(const Control& control);
+}

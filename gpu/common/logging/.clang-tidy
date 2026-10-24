@@ -1,0 +1,3 @@
+# The log classes stand in for an enumeration (LOG_INFO(Render_Vulkan, ...)), named as upstream names them.
+InheritParentConfig: true
+Checks: "-readability-identifier-naming"

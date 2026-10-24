@@ -1,0 +1,80 @@
+# Prerequisites
+*.d
+# (a vendored SPIR-V header for the D language, not a dependency file)
+!gpu/third_party/sirit/externals/SPIRV-Headers/include/spirv/unified1/spv.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+# AMD FidelityFX DLLs too (FSR 4.1.1 is built from the user's own): never in the repository
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Build folders (CMakePresets.json: out/ is also where run.sh writes the prepared game image)
+build/
+/out/
+/out-debug/
+/out-launcher/
+cmake-build-*/
+__pycache__/
+
+# Jetbrains: the IDE's own state; the shared run configurations live in .run/
+.idea/
+
+# Binaries
+/dist/
+
+# AppImage Building
+/.appimage-build/
+/squashfs-root/
+
+# Your game dump (or a symlink to it, as game/CUSA03173): never in the repository
+/game
+
+# Data the game and the launcher write next to run.sh when run from source
+/user/
+/bbport.ini
+/mods.json
+/patches.json
+/pgo/
+/logs/
+last_run.log
+perf.data
+vkd3d-proton.cache
+
+# Upscaler assets: downloaded (tools/fetch_fsr4_assets.sh) or built from your own AMD DLL
+/fsr4_shaders/
+/fsr4_411/
+tools/fsr4cap/bin/
+
+# Captures and leftovers: videos, screenshots, patch backups, generated SPIR-V, archives
+*.mp4
+*.png
+!docs/screenshots/*.png
+*.orig
+/*.spv
+/*.zip
