@@ -109,4 +109,9 @@ void Note(VAddr address, u64 size, u64 tick, u64 hash, u32 kind);
 void CheckDump(VAddr address, u64 size, const std::function<bool(u64)>& tick_done);
 } // namespace InPlaceReads
 
+/// BB_WATCH_READS=<hex address>[,...] (diagnostics): each shader that binds memory holding one of
+/// these addresses, as a buffer or a texture, printed once per shader, address and kind.
+bool WatchingBindings();
+void WatchBinding(const Shader::Info& stage, VAddr address, u64 size, bool written, const char* kind);
+
 } // namespace Vulkan

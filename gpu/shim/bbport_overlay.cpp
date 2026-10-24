@@ -827,18 +827,17 @@ void Menu()
                                   "Другое соотношение сторон расширяет обзор (интерфейс у краёв экрана). "
                                   "Смена размера сбрасывает историю апскейлера и может вызвать короткую паузу."));
     }
-    const char* live_modes[] = {BbSettings::MenuText("Auto (based on GPU)", "Авто (по видеокарте)"),
-                                BbSettings::MenuText("Off (faster)", "Выключена (быстрее)"),
+    const char* live_modes[] = {BbSettings::MenuText("Off (faster)", "Выключена (быстрее)"),
                                 BbSettings::MenuText("On", "Включена")};
-    int live = s.live_resolution + 1;
+    const int live = s.live_resolution != 0 ? 1 : 0;
     if (ImGui::BeginCombo(BbSettings::MenuText("Live resolution changes", "Смена разрешения на лету"),
                           live_modes[live]))
     {
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < 2; ++i)
         {
             if (ImGui::Selectable(live_modes[i], i == live))
             {
-                Store(s.live_resolution, i - 1, true);
+                Store(s.live_resolution, i, true);
             }
         }
         ImGui::EndCombo();
@@ -853,14 +852,15 @@ void Menu()
                                                 "Эта сессия запущена с фиксированным разрешением: "
                                                 "смена — после перезапуска"));
     }
-    Hint(BbSettings::MenuText("On: output resolution and preset change without restarting, but game post-processing "
-                              "stays at 1080p, which is noticeably slower on Steam Deck and older GPUs. "
-                              "Off: everything renders at the preset resolution, and changes require a restart. Auto "
-                              "enables this on powerful discrete GPUs. Applies after restarting the game.",
-                              "Включена: разрешение вывода и пресет меняются без перезапуска, но постобработка игры "
-                              "остаётся в 1080p — на Steam Deck и старых видеокартах это заметно медленнее. "
-                              "Выключена: всё рисуется в разрешении пресета, смена — через перезапуск. Авто включает "
-                              "её на мощных дискретных видеокартах. Применяется после перезапуска игры."));
+    Hint(BbSettings::MenuText(
+        "On: output resolution and preset change without restarting, but game post-processing "
+        "stays at 1080p, which costs frame rate (about 10% on an RTX 4080, more on Steam Deck and older GPUs). "
+        "Off: everything renders at the preset resolution, and changes require a restart. Applies "
+        "after restarting the game.",
+        "Включена: разрешение вывода и пресет меняются без перезапуска, но постобработка игры "
+        "остаётся в 1080p — на Steam Deck и старых видеокартах это заметно медленнее. "
+        "Выключена: всё рисуется в разрешении пресета, смена — через перезапуск. Применяется после "
+        "перезапуска игры."));
     ImGui::SeparatorText(BbSettings::MenuText("Game effects", "Эффекты игры (после перезапуска)"));
     const char* lods[] = {
         BbSettings::MenuText("Highest (-2)", "Максимальная (-2)"), BbSettings::MenuText("Game default", "Как в игре"),

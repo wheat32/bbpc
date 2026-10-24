@@ -95,6 +95,15 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                               Shader::Backend::Bindings& binding, u32& write_index, bool& barrier, bool on_helper)
 {
     BB_SECTION(BindTextures);
+    static const bool watching = WatchingBindings();
+    for (u32 i = 0; watching && i < stage.images.size(); ++i)
+    {
+        const Gcn::Image tsharp = prepared != nullptr ? prepared->image_sharps[i] : stage.images[i].GetSharp(stage);
+        if (tsharp.Address() != 0)
+        {
+            WatchBinding(stage, tsharp.Address(), 1, stage.images[i].is_written, "texture");
+        }
+    }
     const u32 first_image_idx = image_infos.size();
     TextureSet* set_slot = nullptr;
     if (on_helper == false && BindTexturesFromSet(stage, prepared, first_image_idx, barrier, set_slot))

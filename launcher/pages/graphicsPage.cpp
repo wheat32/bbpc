@@ -112,9 +112,6 @@ GraphicsPage::GraphicsPage(const LauncherSettings& settings, const PortIni& ini,
                                 ini.value(QStringLiteral("object_motion")) == QStringLiteral("1"));
     connect(m_motionRow, &SwitchRow::toggled, this, &GraphicsPage::changed);
     upscaler->addRow(m_motionRow);
-    m_showFpsRow = new SwitchRow(tr("Show FPS"), {}, ini.value(QStringLiteral("show_fps")) == QStringLiteral("1"));
-    connect(m_showFpsRow, &SwitchRow::toggled, this, &GraphicsPage::changed);
-    upscaler->addRow(m_showFpsRow);
     addGroup(upscaler);
 
     SettingsGroup* effects = new SettingsGroup(tr("Game effects"), tr("Game patches, applied at start"));
@@ -154,7 +151,6 @@ void GraphicsPage::store(LauncherSettings& settings, PortIni& ini) const
     ini.setValue(QStringLiteral("sharpen"), onOff(m_sharpenRow->isOn()));
     ini.setValue(QStringLiteral("sharpness"), QString::number(m_sharpnessRow->value(), 'f', SHARPNESS_DECIMALS));
     ini.setValue(QStringLiteral("object_motion"), onOff(m_motionRow->isOn()));
-    ini.setValue(QStringLiteral("show_fps"), onOff(m_showFpsRow->isOn()));
     ini.setValue(QStringLiteral("model_lod"), m_lodRow->value());
     for (auto it = m_effectRows.cbegin(); it != m_effectRows.cend(); ++it)
     {

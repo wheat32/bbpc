@@ -65,6 +65,10 @@ elif [[ -f game/CUSA03173/eboot.bin ]]; then game=game/CUSA03173
 else game=../CUSA03173; fi
 if [[ ! -f $game/eboot.bin ]]; then echo "No eboot.bin in $game (set BB_GAME_DIR)." >&2; exit 1; fi
 original_game=$game
+# The game window's icon: the dump's own (sce_sys/icon0.png), in the taskbar and the title bar.
+if [[ -z ${BB_GAME_ICON:-} && -f $original_game/sce_sys/icon0.png ]]; then
+    export BB_GAME_ICON=$(realpath -- "$original_game/sce_sys/icon0.png")
+fi
 game=$("$PYTHON" scripts/mods.py "$game" --out "$out" \
     --mods-dir "${BB_MODS_DIR:-$data/mods}" --config "${BB_MODS_CONFIG:-$data/mods.json}" \
     --enabled "${BB_MODS_ENABLED:-1}")
@@ -92,10 +96,10 @@ fps=${BB_FPS:-uncap}
 # drawn at the output size. Preset and output changes need a restart.
 # Live resolution changes keep the guest at 1920x1080 and scale host targets at run time instead
 # (output and presets change in the menu without a restart, but post-processing stays at 1080p
-# and scene targets are copied back: much slower on the Steam Deck and older GPUs). Chosen by
-# BB_LIVE_RES=0/1, else bbport.ini live_resolution=0/1/auto (auto: the GPU check, strong
-# discrete GPUs get them); off when unset. 1080p output and TAA always use the live path.
-# The GPU tools (bb-gpu-capabilities: the game's GPU, its live resolution support).
+# and scene targets are copied back: about 10% slower even on an RTX 4080, much slower on the
+# Steam Deck and older GPUs). Chosen by BB_LIVE_RES=0/1, else bbport.ini live_resolution=0/1;
+# off when unset, and for the "auto" of older settings. 1080p output and TAA always use the live
+# path. The GPU tools (bb-gpu-capabilities: the game's GPU).
 if [[ -n ${BB_PROBE:-} ]]; then caps=$(dirname -- "$BB_PROBE")/bb-gpu-capabilities
 elif [[ -n ${BB_PREBUILT:-} ]]; then caps=bin/bb-gpu-capabilities
 else caps=$build_dir/bb-gpu-capabilities; fi
@@ -110,10 +114,6 @@ if [[ -n ${scaled_output:-} ]]; then
         while IFS= read -r line || [[ -n $line ]]; do
             [[ $line =~ ^live_resolution=([01]|auto)$ ]] && live=${BASH_REMATCH[1]}
         done < "$BB_CONFIG"
-    fi
-    if [[ $live == auto ]]; then
-        live=$("$caps" --live-resolution 2> >(while IFS= read -r line; do
-            [[ $line == *MANGOHUD* ]] || printf '%s\n' "$line"; done >&2)) || live=0
     fi
     [[ $live == 1 ]] || live=0
 fi

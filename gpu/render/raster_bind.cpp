@@ -96,6 +96,57 @@ bool Rasterizer::HelperEligible(const Pipeline* pipeline) const
     return true;
 }
 
+namespace
+{
+
+const std::vector<VAddr>& WatchedAddresses()
+{
+    static const std::vector<VAddr> watched = []
+    {
+        std::vector<VAddr> list;
+        const char* env = std::getenv("BB_WATCH_READS");
+        for (const char* at = env; at != nullptr && *at != '\0';)
+        {
+            char* end = nullptr;
+            const VAddr value = std::strtoull(at, &end, 16);
+            if (end == at) break;
+            list.push_back(value);
+            at = *end == ',' ? end + 1 : end;
+        }
+        return list;
+    }();
+    return watched;
+}
+
+} // namespace
+
+bool WatchingBindings()
+{
+    return WatchedAddresses().empty() == false;
+}
+
+void WatchBinding(const Shader::Info& stage, VAddr address, u64 size, bool written, const char* kind)
+{
+    const std::vector<VAddr>& watched = WatchedAddresses();
+    if (watched.empty()) return;
+    static std::mutex mutex;
+    static std::set<std::tuple<u64, VAddr, std::string>> told;
+    for (const VAddr target : watched)
+    {
+        if (target < address || target >= address + size)
+        {
+            continue;
+        }
+        std::scoped_lock lock{mutex};
+        if (told.emplace(stage.pgm_hash, target, kind).second)
+        {
+            std::printf("Read watch: %#llx bound as %s%s by stage %d shader %016llx (binding %#llx+%llu)\n",
+                        (unsigned long long)target, kind, written ? " (written)" : "", int(stage.sw_stage),
+                        (unsigned long long)stage.pgm_hash, (unsigned long long)address, (unsigned long long)size);
+        }
+    }
+}
+
 bool Rasterizer::TexturesBindableOnHelper(const Shader::Info& stage, const PreparedStage* prepared)
 {
     const u64 generation = texture_cache.RegistryGeneration();
@@ -1027,6 +1078,8 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
     {
         LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}", vsharp.GetSize(), size, stage.pgm_hash);
     }
+    VideoCore::BufferCache::binding_shader = stage.pgm_hash;
+    WatchBinding(stage, address, size, desc.is_written, desc.is_formatted ? "texel buffer" : "buffer");
     const auto [buffer, offset] = buffer_cache.ObtainBuffer(address, size, desc.is_written, desc.is_formatted);
     if (desc.is_written == false && InPlaceReads::Enabled())
     {

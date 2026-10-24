@@ -129,7 +129,7 @@ void Set(Values& v, const std::string& key, const std::string& value)
     }
     else if (key == "live_resolution")
     {
-        v.live_resolution = value == "auto" ? -1 : std::clamp(i, 0, 1);
+        v.live_resolution = value == "auto" ? 0 : std::clamp(i, 0, 1); // older settings' auto: off
     }
     else if (key == "output_res")
     {
@@ -537,7 +537,7 @@ void Save()
     put("aspect_ratio", AspectKey(v.aspect));
     put("output_res", SizeText(CurrentOutput()));
     // Read by run.sh at start.
-    put("live_resolution", v.live_resolution < 0 ? "auto" : flag(v.live_resolution != 0));
+    put("live_resolution", flag(v.live_resolution != 0));
     put("frame_generation", flag(v.frame_generation));
     if (v.menu_x >= 0.0f && v.menu_y >= 0.0f)
     {

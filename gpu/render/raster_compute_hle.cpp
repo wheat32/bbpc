@@ -4,6 +4,12 @@
 // their resources and replaced by the tracked metadata state or a Vulkan copy or clear (the
 // images live in their own Vulkan memory, not in the buffers the shader would write).
 
+#include <cstdio>
+#include <cstdlib>
+#include <mutex>
+#include <set>
+#include <tuple>
+
 #include "render/raster_internal.h"
 
 namespace Vulkan
@@ -70,10 +76,62 @@ namespace
 {
 
 // The buffers may run past the images (padding up to the next one: the light shafts' 960x540
-// targets are copied as 0x241800 bytes of 0x240000): those bytes are copied as a buffer.
+// targets are copied as 0x241800 bytes of 0x240000): those bytes are copied as a buffer. A depth
+// image's copy also takes its stencil plane after it (the scene depth: 2 MB after 7 MB), which
+// the image's write-backs to memory never held either: up to the depth's own size.
 constexpr u64 MAX_TAIL = 64_KB;
 
+/// A copy into memory that holds no image yet: an image of the source's layout is made there, so
+/// that the copy stays on the GPU. Before, the source went out to memory every frame (tiled back
+/// for the shader to read) and the shader copied it in memory; shaders sampling the copy found
+/// the image, readers of that memory as a buffer get it written back as from any GPU-written
+/// image. Color sources only, and only where no other image overlaps the memory.
+VideoCore::ImageId MakeCopyDestination(VideoCore::TextureCache& texture_cache, const VideoCore::Image& src,
+                                       VAddr address, u64 size)
+{
+    if (src.info.props.is_depth || src.info.num_samples != 1)
+    {
+        return {};
+    }
+    bool occupied = false;
+    texture_cache.ForEachImageInRegion(address, size,
+                                       [&](VideoCore::ImageId, VideoCore::Image&)
+                                       {
+                                           occupied = true;
+                                       });
+    if (occupied)
+    {
+        return {};
+    }
+    VideoCore::TextureCache::ImageDesc desc;
+    desc.info = src.info;
+    desc.info.guest_address = address;
+    desc.info.meta_info = {}; // the source's CMASK and FMASK stay the source's
+    desc.type = VideoCore::TextureCache::BindingType::Texture;
+    return texture_cache.FindImage(desc);
+}
+
 } // namespace
+
+/// BB_IMAGE_COPY_LOG=1: why a two-buffer copy shader went to the real shader, once per shader,
+/// source and reason (the number of the failing check in IsComputeImageCopy).
+static bool RejectCopy(int reason, u64 shader, VAddr src, VAddr dst, u64 size, const char* detail = "")
+{
+    static const bool log = std::getenv("BB_IMAGE_COPY_LOG") != nullptr;
+    if (log)
+    {
+        static std::mutex mutex;
+        static std::set<std::tuple<u64, VAddr, int>> told;
+        std::scoped_lock lock{mutex};
+        if (told.emplace(shader, src, reason).second)
+        {
+            std::printf("Image copy: cs %016llx not replaced (check %d), %#llx -> %#llx, %llu bytes%s\n",
+                        (unsigned long long)shader, reason, (unsigned long long)src, (unsigned long long)dst,
+                        (unsigned long long)size, detail);
+        }
+    }
+    return false;
+}
 
 bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline, bool dry_run)
 {
@@ -97,27 +155,54 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline, bool dry_run)
     }
     const Gcn::Buffer buf0 = desc0.GetSharp(info);
     const Gcn::Buffer buf1 = desc1.GetSharp(info);
+    const VAddr read = desc0.is_written ? buf1.base_address : buf0.base_address;
+    const VAddr written = desc0.is_written ? buf0.base_address : buf1.base_address;
+    const auto reject = [&](int reason)
+    {
+        return RejectCopy(reason, info.pgm_hash, read, written, buf0.GetSize());
+    };
     if (buf0.GetSize() != buf1.GetSize() || cs.dim_x != buf0.GetSize() / 256)
     {
-        return false;
+        return reject(1);
     }
     const VideoCore::ImageId image0_id = texture_cache.FindImageFromRange(buf0.base_address, buf0.GetSize());
     if (!image0_id)
     {
-        return false;
+        return reject(desc0.is_written ? 3 : 2);
     }
-    const VideoCore::ImageId image1_id = texture_cache.FindImageFromRange(buf1.base_address, buf1.GetSize(), false);
+    VideoCore::ImageId image1_id = texture_cache.FindImageFromRange(buf1.base_address, buf1.GetSize(), false);
+    // BB_COPY_DESTINATIONS=0 (experiment): copies into memory without an image run the shader.
+    static const bool make_destinations = []
+    {
+        const char* env = std::getenv("BB_COPY_DESTINATIONS");
+        return (env != nullptr && env[0] == '0') == false;
+    }();
+    if (!image1_id && desc1.is_written && dry_run == false && make_destinations)
+    {
+        image1_id =
+            MakeCopyDestination(texture_cache, texture_cache.GetImage(image0_id), buf1.base_address, buf1.GetSize());
+    }
     if (!image1_id)
     {
-        return false;
+        return reject(desc0.is_written ? 2 : 3);
     }
     VideoCore::Image& image0 = texture_cache.GetImage(image0_id);
     VideoCore::Image& image1 = texture_cache.GetImage(image1_id);
     const u64 image_size = image0.info.guest_size;
+    const bool depth_source = (desc0.is_written ? image1 : image0).info.props.is_depth;
+    const u64 max_tail = depth_source ? image_size : MAX_TAIL;
     if (image_size != image1.info.guest_size || image0.info.pitch != image1.info.pitch || buf0.GetSize() < image_size ||
-        buf0.GetSize() - image_size > MAX_TAIL || image0.info.num_bits != image1.info.num_bits)
+        buf0.GetSize() - image_size > max_tail || image0.info.num_bits != image1.info.num_bits)
     {
-        return false;
+        char detail[192];
+        std::snprintf(detail, sizeof(detail),
+                      ": %ux%u fmt %u, %llu bytes, pitch %u, %u bits vs %ux%u fmt %u, %llu "
+                      "bytes, pitch %u, %u bits",
+                      image0.info.size.width, image0.info.size.height, u32(image0.info.pixel_format),
+                      (unsigned long long)image0.info.guest_size, image0.info.pitch, image0.info.num_bits,
+                      image1.info.size.width, image1.info.size.height, u32(image1.info.pixel_format),
+                      (unsigned long long)image1.info.guest_size, image1.info.pitch, image1.info.num_bits);
+        return RejectCopy(4, info.pgm_hash, read, written, buf0.GetSize(), detail);
     }
     VideoCore::Image& src = desc0.is_written ? image1 : image0;
     VideoCore::Image& dst = desc0.is_written ? image0 : image1;

@@ -67,7 +67,6 @@ private:
     SwitchRow* m_sharpenRow = nullptr;
     SpinRow* m_sharpnessRow = nullptr;
     SwitchRow* m_motionRow = nullptr;
-    SwitchRow* m_showFpsRow = nullptr;
     ChoiceRow* m_lodRow = nullptr;
     QHash<QString, SwitchRow*> m_effectRows;
     SwitchRow* m_skipNetworkRow = nullptr;

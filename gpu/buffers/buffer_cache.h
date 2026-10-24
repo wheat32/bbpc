@@ -88,6 +88,9 @@ class BufferCache
     static constexpr u64 MIN_BLOCK_SIZE = 16_KB;
 
 public:
+    /// The shader whose resources this thread binds (BB_TILE_BACK_LOG names it).
+    static inline thread_local u64 binding_shader = 0;
+
     /// Read-only bindings up to this size are copied into a stream buffer (bbport: public for
     /// the draw pipeline's constant ring).
     static constexpr u64 STREAM_THRESHOLD = 16_KB;

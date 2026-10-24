@@ -4347,11 +4347,12 @@ bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, u64 arena_offs
         static std::atomic<u32> printed{0};
         if (printed.fetch_add(1) < 400)
         {
-            std::printf("Tile back: image %#llx %ux%u fmt %u tile %u size %llu, read %#llx+%u; last "
-                        "GPU write %lld submissions ago, flags %#x\n",
+            std::printf("Tile back: image %#llx %ux%u fmt %u tile %u size %llu, read %#llx+%u by shader %016llx; "
+                        "last GPU write %lld submissions ago, flags %#x\n",
                         (unsigned long long)image.info.guest_address, image.info.size.width, image.info.size.height,
                         u32(image.info.pixel_format), u32(image.info.tile_mode),
                         (unsigned long long)image.info.guest_size, (unsigned long long)device_addr, size,
+                        (unsigned long long)binding_shader,
                         image.gpu_write_tick ? (long long)(scheduler.CurrentTick() - image.gpu_write_tick) : -1ll,
                         u32(image.flags));
         }

@@ -61,7 +61,7 @@ struct Effect
 inline constexpr Effect EFFECTS[] = {
     {"effect_chromatic_aberration", "Chromatic aberration", "Хроматическая аберрация", true},
     {"effect_dof", "Depth of field (DoF)", "Глубина резкости (DoF)", true},
-    {"effect_motion_blur", "Motion blur", "Размытие в движении", true},
+    {"effect_motion_blur", "Motion blur", "Размытие в движении", false},
     {"effect_ssao", "Ambient occlusion (SSAO)", "Затенение SSAO", true},
     {"effect_game_aa", "Game's own anti-aliasing", "Собственное сглаживание игры", true},
     {"effect_dynamic_shadows", "Shadows from dynamic lights", "Тени от динамических источников", true},

@@ -26,11 +26,16 @@ DisplayPage::DisplayPage(const LauncherSettings& settings, const PortIni& ini, Q
                                                        "below; the UI keeps to the screen edges"));
     screen->addRow(m_aspectRow);
     m_outputRow = new ChoiceRow(tr("Output resolution"),
-                                tr("The upscaler fills the frame; Steam Deck: 1280×800 (16:10)"));
+                                tr("The size of the final image, menus included. The game renders at it natively with "
+                                   "Native AA, TAA or the upscaler off; the other presets render the scene smaller and "
+                                   "upscale it to this size. Steam Deck: 1280×800 (16:10)"));
     screen->addRow(m_outputRow);
+    // "auto" of older settings is off, as unset.
+    const QString live = ini.value(QStringLiteral("live_resolution")) == QStringLiteral("1") ? QStringLiteral("1")
+                                                                                              : QStringLiteral("0");
     m_liveRow = new ChoiceRow(tr("Live resolution changes"),
-                              tr("No restart needed, but slower on the Steam Deck and older GPUs"),
-                              Choices::liveResolution(), ini.value(QStringLiteral("live_resolution"), QStringLiteral("0")));
+                              tr("Change the resolution and preset in game without a restart, but about 10% slower"),
+                              Choices::liveResolution(), live);
     connect(m_liveRow, &ChoiceRow::valueChanged, this, &DisplayPage::changed);
     screen->addRow(m_liveRow);
 
@@ -51,6 +56,10 @@ DisplayPage::DisplayPage(const LauncherSettings& settings, const PortIni& ini, Q
     m_hdrRow = new SwitchRow(tr("Allow HDR"), {}, settings.hdr);
     connect(m_hdrRow, &SwitchRow::toggled, this, &DisplayPage::changed);
     screen->addRow(m_hdrRow);
+    m_showFpsRow = new SwitchRow(tr("Show FPS"), tr("The frame rate, over the game"),
+                                 ini.value(QStringLiteral("show_fps")) == QStringLiteral("1"));
+    connect(m_showFpsRow, &SwitchRow::toggled, this, &DisplayPage::changed);
+    screen->addRow(m_showFpsRow);
     addGroup(screen);
     finish();
 
@@ -94,6 +103,7 @@ void DisplayPage::store(LauncherSettings& settings, PortIni& ini) const
     ini.setValue(QStringLiteral("aspect_ratio"), m_aspectRow->value());
     ini.setValue(QStringLiteral("output_res"), m_outputRow->value());
     ini.setValue(QStringLiteral("live_resolution"), m_liveRow->value());
+    ini.setValue(QStringLiteral("show_fps"), m_showFpsRow->isOn() ? QStringLiteral("1") : QStringLiteral("0"));
 }
 
 std::optional<QSize> DisplayPage::monitorSize() const

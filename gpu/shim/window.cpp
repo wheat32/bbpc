@@ -165,6 +165,29 @@ void TellMonitor(SDL_Window* window)
     }
 }
 
+// The window's icon in the taskbar and the title bar: the game's own (the dump's
+// sce_sys/icon0.png, BB_GAME_ICON from run.sh). Without it the desktop shows a default icon.
+void SetGameIcon(SDL_Window* window)
+{
+    const char* path = std::getenv("BB_GAME_ICON");
+    if (path == nullptr || path[0] == '\0') return;
+    SDL_Surface* icon = SDL_LoadPNG(path);
+    if (icon == nullptr)
+    {
+        std::printf("Window: no icon from %s (%s)\n", path, SDL_GetError());
+        return;
+    }
+    if (SDL_SetWindowIcon(window, icon))
+    {
+        std::printf("Window: the game's icon from %s\n", path);
+    }
+    else
+    {
+        std::printf("Window: the icon was not set (%s)\n", SDL_GetError());
+    }
+    SDL_DestroySurface(icon);
+}
+
 } // namespace
 
 WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}, height{height_}
@@ -190,6 +213,7 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     window = SDL_CreateWindowWithProperties(props);
     SDL_DestroyProperties(props);
     ASSERT_MSG(window, "Failed to create window: {}", SDL_GetError());
+    SetGameIcon(window);
     // The cursor over the game: the port's own (BB_CURSOR=0: the system's).
     {
         SDL_Cursor* cursor = BbCursor::Create();

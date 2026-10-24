@@ -159,8 +159,8 @@ settings, starts and stops the game in its own process group, and shows its outp
 | Page | What it sets |
 |---|---|
 | **Game** | Game folder (checked for the 1.09 executable), saves folder, the game's text language, memory and translation model, GPU, frame rate mode and limit |
-| **Display** | Aspect ratio, output resolution, live resolution changes, fullscreen, monitor, present mode, HDR |
-| **Graphics** | Upscaler, preset, sharpening, object motion vectors, the FPS counter, FSR 4.1.1 from your own AMD DLL, NVIDIA's DLSS library, model detail and the game's effects |
+| **Display** | Aspect ratio, output resolution, live resolution changes, fullscreen, monitor, present mode, HDR, the FPS counter |
+| **Graphics** | Upscaler, preset, sharpening, object motion vectors, FSR 4.1.1 from your own AMD DLL, NVIDIA's DLSS library, model detail and the game's effects |
 | **Controls** | The controller to use, keyboard, mouse and gamepad bindings, mouse look and sensitivity |
 | **Mods and patches** | Mod folders with their load order, third-party XML patches |
 | **Online** | Online play, the pool, servers, account or Discord sign-in, a connection test |
@@ -179,12 +179,12 @@ Command line: `bbpc --play` starts the game with the saved settings, `bbpc --bui
 
 For outputs other than 1080p (720p on the Steam Deck, 1440p, 4K), the whole game renders at the
 preset's resolution through a patch applied at start: the fastest path, but changing the output or
-the preset in the in-game menu then needs *Apply and restart the game*. **Live resolution changes**
-(off by default; launcher, in-game menu, or `live_resolution=0|1|auto` in `bbport.ini`) keep the
-game at 1080p internally and scale its render targets at run time instead, so outputs and presets
-switch without a restart. That costs more (the game draws as for 1080p, and some targets are copied
-between sizes), so it suits strong desktop GPUs; `auto` turns it on for discrete GPUs with 8 GB or
-more. 1080p output and TAA always take the live path.
+the preset in the in-game menu then needs *Apply and restart game*. **Live resolution changes**
+(off by default; launcher, in-game menu, or `live_resolution=0|1` in `bbport.ini`) keep the game
+at 1080p internally and scale its render targets at run time instead, so outputs and presets switch
+without a restart. That costs more (the game draws as for 1080p, and some targets are copied
+between sizes): about 10% of the frame rate on an RTX 4080, more on weaker GPUs. The `auto` of older
+settings means off. 1080p output and TAA always take the live path.
 
 ## Upscalers
 
@@ -300,7 +300,7 @@ tests.
 | `patches/` | Community patches for Bloodborne |
 | `tools/` | Developer tools: scripted runs, A/B toggles, benchmarks, FSR 4 shader rewrites, `fsr4cap` (FSR 4.1.1 recording) |
 | `tests/` | Runtime, GPU library and Python tests |
-| `docs/` | [Mods and patches](docs/MODS.md), [BBSC](docs/BBSC.md), design notes on [upscaling](docs/upscaler.md) and [parallel GPU processing](docs/parallel_gpu.md) |
+| `docs/` | The [roadmap](docs/ROADMAP.md) (native speed, no emulation), [mods and patches](docs/MODS.md), [BBSC](docs/BBSC.md), design notes on [upscaling](docs/upscaler.md) and [parallel GPU processing](docs/parallel_gpu.md) |
 | `.github/workflows/` | CI (pull requests) and releases (pushes to `main`) |
 
 The original project's change logs, development logs and investigations are in

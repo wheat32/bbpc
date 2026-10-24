@@ -8,7 +8,8 @@
 # another preset's build). BB_PGO: generate (an instrumented build that writes pgo/ while the game
 # runs), use or off; by default the profile in pgo/ is used when there is one. BB_LTO=OFF disables
 # link-time optimization. DLSS_SDK_ROOT=<github.com/NVIDIA/DLSS checkout> also builds the DLSS
-# bridge (out/libbbport_dlss.so) and puts NVIDIA's libnvidia-ngx-dlss.so next to bb-probe.
+# bridge (out/libbbport_dlss.so) and puts NVIDIA's libnvidia-ngx-dlss.so next to bb-probe; later
+# builds of that folder keep it (DLSS_SDK_ROOT= turns it off again).
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 preset=release
@@ -57,7 +58,9 @@ else
         if [[ -n $(find pgo -name '*.gcda' -print -quit 2>/dev/null) ]]; then pgo=use; else pgo=off; fi
     fi
     mkdir -p pgo "$build"
-    options=(-DBB_PGO="$pgo" -DDLSS_SDK_ROOT="${DLSS_SDK_ROOT:-}")
+    options=(-DBB_PGO="$pgo")
+    # DLSS: the build folder keeps the SDK it was given; DLSS_SDK_ROOT= (empty) turns it off.
+    [[ -z ${DLSS_SDK_ROOT+set} ]] || options+=(-DDLSS_SDK_ROOT="$DLSS_SDK_ROOT")
     [[ -z ${BB_LTO:-} ]] || options+=(-DBB_LTO="$BB_LTO")
     (( run_tests == 0 )) || options+=(-DBBPC_BUILD_TESTS=ON)
     if ! cmake --preset "$preset" "${options[@]}" > "$build/cmake.log" 2>&1; then

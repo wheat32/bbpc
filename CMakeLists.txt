@@ -97,9 +97,13 @@ if (BBPC_BUILD_PORT)
     if (DLSS_SDK_ROOT)
         add_subdirectory(gpu/dlss_bridge)
         set_target_properties(bbport_dlss PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-        add_custom_command(TARGET bbport_dlss POST_BUILD
+        # A target of its own: a POST_BUILD step must be added where bbport_dlss is defined, and
+        # gpu/dlss_bridge also builds standalone (MSVC).
+        add_custom_target(bbport_dlss_runtime ALL
             COMMAND "${CMAKE_COMMAND}" "-DSDK=${DLSS_SDK_ROOT}" "-DOUT=${CMAKE_BINARY_DIR}"
-                    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyDlssRuntime.cmake")
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyDlssRuntime.cmake"
+            DEPENDS bbport_dlss
+            COMMENT "NVIDIA's DLSS library next to bb-probe")
         message(STATUS "DLSS bridge: on (${DLSS_SDK_ROOT})")
     endif()
 endif()

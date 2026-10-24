@@ -11,7 +11,7 @@ class ChoiceRow;
 class SwitchRow;
 
 // DisplayPage - the output's aspect ratio and resolution, live resolution changes, fullscreen,
-// the monitor, the present mode and HDR.
+// the monitor, the present mode, HDR and the FPS counter.
 class DisplayPage : public LauncherPage
 {
     Q_OBJECT
@@ -44,4 +44,5 @@ private:
     ChoiceRow* m_displayRow = nullptr;
     ChoiceRow* m_presentRow = nullptr;
     SwitchRow* m_hdrRow = nullptr;
+    SwitchRow* m_showFpsRow = nullptr;
 };

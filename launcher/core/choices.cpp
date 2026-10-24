@@ -101,7 +101,6 @@ const QList<Choices::Choice>& Choices::gameLanguages()
 const QList<Choices::Choice>& Choices::liveResolution()
 {
     static const QList<Choice> list = {
-        { QT_TRANSLATE_NOOP("Choices", "Auto (by GPU)"), "auto" },
         { QT_TRANSLATE_NOOP("Choices", "Off (faster)"), "0" },
         { QT_TRANSLATE_NOOP("Choices", "On"), "1" },
     };
@@ -198,7 +197,7 @@ const QList<Choices::Effect>& Choices::effects()
     static const QList<Effect> list = {
         { "effect_chromatic_aberration", QT_TRANSLATE_NOOP("Choices", "Chromatic aberration"), true },
         { "effect_dof", QT_TRANSLATE_NOOP("Choices", "Depth of field (DoF)"), true },
-        { "effect_motion_blur", QT_TRANSLATE_NOOP("Choices", "Motion blur"), true },
+        { "effect_motion_blur", QT_TRANSLATE_NOOP("Choices", "Motion blur"), false },
         { "effect_ssao", "SSAO", true },
         { "effect_game_aa", QT_TRANSLATE_NOOP("Choices", "The game's own anti-aliasing"), true },
         { "effect_dynamic_shadows", QT_TRANSLATE_NOOP("Choices", "Dynamic light shadows"), true },
