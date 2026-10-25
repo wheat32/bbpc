@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "upscale/vk_temporal_upscaler.h"
 #include "render/vk_gpu_profiler.h"
+#include "upscale/dlss_generation.h"
 #include "upscale/motion_history.h"
 #include "upscale/vk_scene_resolution.h"
 #include "upscale/ui_composition.h"
@@ -2682,6 +2683,29 @@ void TemporalUpscaler::DumpPresented(vk::Image image, u32 width, u32 height, vk:
 namespace Vulkan
 {
 
+namespace
+{
+/// DLSS by the generation it runs ("DLSS 4.5", dlss_generation.h): for the overlay, logged when
+/// it changes.
+void NoteDlssGeneration(const std::string& version, int quality)
+{
+    const std::string_view generation = DlssGeneration::Of(version, quality);
+    std::string name = "DLSS";
+    if (generation.empty() == false)
+    {
+        name += ' ';
+        name += generation;
+    }
+    static std::string told;
+    if (name != told)
+    {
+        told = name;
+        std::printf("DLSS: %s (NVIDIA's library %s, quality mode %d)\n", name.c_str(), version.c_str(), quality);
+    }
+    BbSettings::SetDlssName(name);
+}
+} // namespace
+
 bool TemporalUpscaler::UseFsr4() const
 {
     const int selected = BbSettings::Get().upscaler;
@@ -2761,6 +2785,10 @@ bool TemporalUpscaler::RecordDlss(vk::CommandBuffer cmdbuf, const Dlss::Resource
         dlss->ReleaseFeature();
         ok = dlss->CreateFeature(cmdbuf, desc);
         reset = true;
+        if (ok)
+        {
+            NoteDlssGeneration(dlss->Version(), desc.quality);
+        }
     }
     if (ok)
     {

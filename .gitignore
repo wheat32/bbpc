@@ -70,6 +70,8 @@ vkd3d-proton.cache
 /fsr4_shaders/
 /fsr4_411/
 tools/fsr4cap/bin/
+# NVIDIA's DLSS SDK (tools/fetch_dlss_sdk.sh)
+/dlss-sdk/
 
 # Captures and leftovers: videos, screenshots, patch backups, generated SPIR-V, archives
 *.mp4

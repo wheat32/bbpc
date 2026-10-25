@@ -209,10 +209,14 @@ void GraphicsPage::updateUpscalerStatus()
     {
         // The game looks for the bridge and NVIDIA's library next to bb-probe (vk_dlss.cpp).
         const QString binaries = PortPaths::binariesDir();
+        const QFileInfo library = UpscalerAssets::ngxInUse(m_userDir + QStringLiteral("/dlss"), binaries);
         const bool found = QFileInfo(binaries + QStringLiteral("/libbbport_dlss.so")).isFile()
-            && (UpscalerAssets::ngxLibraries(m_userDir + QStringLiteral("/dlss")).isEmpty() == false
-                || UpscalerAssets::ngxLibraries(binaries).isEmpty() == false);
-        hint = found ? tr("DLSS found (needs an NVIDIA RTX GPU)")
+            && library.fileName().isEmpty() == false;
+        // The generation depends on the preset: NVIDIA's defaults differ per quality mode.
+        const QString version = UpscalerAssets::ngxVersion(library);
+        const QString generation = UpscalerAssets::dlssGeneration(version, m_presetRow->value().toInt());
+        const QString name = generation.isEmpty() ? QStringLiteral("DLSS") : QStringLiteral("DLSS %1").arg(generation);
+        hint = found ? tr("%1 with this preset (NVIDIA's library %2); needs an NVIDIA RTX GPU").arg(name, version)
                      : tr("DLSS not found: choose NVIDIA's library below (a build with the DLSS bridge is needed too). "
                           "The game will use FSR 3.1");
     }
@@ -246,17 +250,18 @@ void GraphicsPage::updateFsr411Row(const QString& progress)
 
 void GraphicsPage::updateDlssRow()
 {
-    const QFileInfoList own = UpscalerAssets::ngxLibraries(m_userDir + QStringLiteral("/dlss"));
-    const QFileInfoList bundled = UpscalerAssets::ngxLibraries(PortPaths::binariesDir());
+    const QString ownDirectory = m_userDir + QStringLiteral("/dlss");
+    const bool own = UpscalerAssets::ngxLibraries(ownDirectory).isEmpty() == false;
+    const QFileInfo library = UpscalerAssets::ngxInUse(ownDirectory, PortPaths::binariesDir());
     const bool bridge = QFileInfo(PortPaths::binariesDir() + QStringLiteral("/libbbport_dlss.so")).isFile();
     QString text;
-    if (own.isEmpty() == false)
+    if (own)
     {
-        text = tr("Your own: %1").arg(UpscalerAssets::ngxVersion(own.last()));
+        text = tr("Your own: %1").arg(UpscalerAssets::ngxVersion(library));
     }
-    else if (bundled.isEmpty() == false)
+    else if (library.fileName().isEmpty() == false)
     {
-        text = tr("From this build: %1").arg(UpscalerAssets::ngxVersion(bundled.last()));
+        text = tr("From this build: %1").arg(UpscalerAssets::ngxVersion(library));
     }
     else
     {
@@ -267,7 +272,7 @@ void GraphicsPage::updateDlssRow()
         text += u'\n' + tr("This build has no DLSS bridge (libbbport_dlss.so): DLSS will not work");
     }
     m_dlssRow->setSubtitle(text);
-    m_dlssReset->setEnabled(own.isEmpty() == false);
+    m_dlssReset->setEnabled(own);
     updateUpscalerStatus();
 }
 

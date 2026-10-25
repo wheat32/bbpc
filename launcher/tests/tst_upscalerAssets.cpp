@@ -84,6 +84,43 @@ private slots:
         QCOMPARE(UpscalerAssets::ngxVersion(libraries.last()), QStringLiteral("310.10.0"));
     }
 
+    void ngxInUse_ownLibrary_winsOverANewerPackageOne()
+    {
+        QTemporaryDir own;
+        QTemporaryDir package;
+        writeFile(own.filePath(UpscalerAssets::NGX_PREFIX + QStringLiteral("310.4.0")), SPIRV_SIZE);
+        writeFile(package.filePath(UpscalerAssets::NGX_PREFIX + QStringLiteral("310.9.16")), SPIRV_SIZE);
+        QCOMPARE(UpscalerAssets::ngxVersion(UpscalerAssets::ngxInUse(own.path(), package.path())),
+                 QStringLiteral("310.4.0"));
+    }
+
+    void ngxInUse_noOwnLibrary_isThePackagesNewest()
+    {
+        QTemporaryDir own;
+        QTemporaryDir package;
+        for (const QString& version : { QStringLiteral("310.10.0"), QStringLiteral("310.9.16") })
+        {
+            writeFile(package.filePath(UpscalerAssets::NGX_PREFIX + version), SPIRV_SIZE);
+        }
+        QCOMPARE(UpscalerAssets::ngxVersion(UpscalerAssets::ngxInUse(own.path(), package.path())),
+                 QStringLiteral("310.10.0"));
+    }
+
+    void ngxInUse_noLibrary_isEmpty()
+    {
+        QTemporaryDir own;
+        QTemporaryDir package;
+        QVERIFY(UpscalerAssets::ngxInUse(own.path(), package.path()).fileName().isEmpty());
+    }
+
+    void dlssGeneration_presets_followNvidiasDefaults()
+    {
+        QCOMPARE(UpscalerAssets::dlssGeneration(QStringLiteral("310.9.16"), 1), QStringLiteral("4"));
+        QCOMPARE(UpscalerAssets::dlssGeneration(QStringLiteral("310.9.16"), 3), QStringLiteral("4.5"));
+        QCOMPARE(UpscalerAssets::dlssGeneration(QStringLiteral("3.7.20"), 1), QStringLiteral("3"));
+        QVERIFY(UpscalerAssets::dlssGeneration(QStringLiteral("320.1.0"), 1).isEmpty());
+    }
+
     void isElf_header_isRecognized()
     {
         QTemporaryDir dir;

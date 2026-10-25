@@ -71,8 +71,8 @@ summary:
   and a native **TAA**.
 - **Keyboard and mouse** with mouse look, a Dark Souls III-like layout, rebinding in the launcher,
   and button prompts that match the gamepad in use.
-- **Settings inside the game's own menu** (*System → Display / Effects*) and an **overlay menu**
-  (Insert or L3+R3).
+- **Settings inside the game's own menu** (*System → Display / Effects*), a **Quit Game** item at
+  the bottom of the title menu, and an **overlay menu** (Insert or L3+R3).
 - **Online play and seamless co-op** on shadPS4 0.20's network stack: the **Seamless Hunt** pool
   (bells, summons, messages, bloodstains and BBSC seamless co-op for up to five hunters) or **The
   Hunter's Dream** (Discord sign-in).
@@ -200,10 +200,13 @@ settings means off. 1080p output and TAA always take the live path.
   found too); `umu-launcher` is used when installed. AMD's official FSR 4.0.x and community
   builds such as 4.0.2b do not fit. From source the recording also needs `mingw-w64-gcc`,
   `cmake`, `ninja`, `python`, `spirv-tools` and `git`; the AppImage brings its tools prebuilt.
-- **DLSS** (NVIDIA RTX): NVIDIA's DLSS SDK is not included. Check out
-  [github.com/NVIDIA/DLSS](https://github.com/NVIDIA/DLSS) and build with
-  `DLSS_SDK_ROOT=/path/to/DLSS bash build.sh`: that builds the bridge `out/libbbport_dlss.so` and
-  copies NVIDIA's `libnvidia-ngx-dlss.so.<version>` next to `out/bb-probe`. A newer
+- **DLSS** (NVIDIA RTX): the release AppImage and tarball carry the DLSS bridge and NVIDIA's
+  `libnvidia-ngx-dlss.so` (NVIDIA's RTX SDK license allows its runtime library in an application;
+  its text is `NVIDIA-DLSS-LICENSE.txt` in the package). From source, `bash tools/fetch_dlss_sdk.sh`
+  fetches the parts of [NVIDIA's SDK](https://github.com/NVIDIA/DLSS) the build needs into
+  `dlss-sdk/`; `DLSS_SDK_ROOT=$PWD/dlss-sdk bash build.sh` then builds the bridge
+  `out/libbbport_dlss.so` and copies NVIDIA's `libnvidia-ngx-dlss.so.<version>` next to
+  `out/bb-probe`. A newer
   `libnvidia-ngx-dlss.so` can be chosen in the launcher (**Graphics → DLSS: NVIDIA's library**).
   A game's `nvngx_dlss.dll` is the Windows library and does not load on Linux.
 - **TAA** is a native-resolution temporal anti-aliasing mode that switches live without an FSR
@@ -249,6 +252,7 @@ settings, and **Advanced → Extra variables** adds your own. A selection:
 | `BB_ASYNC_PIPELINES=0` | Compile new pipelines at once instead of in the background |
 | `BB_READBACKS=0\|1\|2` | Reads of GPU-written memory by the game (1 by default, 2 precise and slow) |
 | `BB_LARGE_HEAPS=0\|1` | Force the larger graphics heaps for texture packs off or on |
+| `BB_TITLE_QUIT=0` | No Quit Game item in the title menu |
 | `BB_SKIP_GAME_CHECK=1` | Skip the check of the game's executable |
 | `BB_PAD_RECORD=file` / `BB_PAD_REPLAY=file` | Record a route with F9, replay it in scripted tests |
 
@@ -329,4 +333,5 @@ bbpc is licensed under the **GNU GPL v2 or later** ([LICENSE](LICENSE)), as the 
 - Game patches by Kyo, Lance McDonald, auser1337, illusion, emoose and other community members
   (`patches/Bloodborne.xml`).
 
-AMD's FSR 4 DLLs and model data and NVIDIA's DLSS SDK and libraries are not distributed here.
+This repository does not include AMD's FSR 4 DLLs and model data or NVIDIA's DLSS SDK. The
+release packages carry NVIDIA's DLSS runtime library, under NVIDIA's license.

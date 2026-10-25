@@ -423,6 +423,9 @@ int posix_pthread_join(PthreadT thread, void** ret)
 void posix_pthread_exit(void* status)
 {
     g_host.thread_exit(status);
+    // The runtime's thread_exit (runtime_thread_exit) never returns: it leaves the thread or stops
+    // the game. The compiler cannot see that through a pointer; were it ever to return, stop here.
+    std::abort();
 }
 
 } // namespace Libraries::Kernel

@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 
+#include <SDL3/SDL.h>
+
 #include "bbport_guest_hooks.h"
 #include "bbport_settings.h"
 #include <fmt/format.h>
@@ -78,8 +80,16 @@ struct Layout
 constexpr Layout CONTROLS_LAYOUT{0x4934065, 113020, 0, 6}; // "ControllSetting"
 constexpr u32 TEXT_NAME = 0xc8, TEXT_HELP = 0xc9;          // SP_menu text / SP_one-line help
 constexpr u32 SCREEN_SOUND_ITEM = 110001;                  // "Screen/Sound" in the System menu: ours follow it
+constexpr u32 TITLE_SYSTEM_ITEM = 401304;                  // "System" in the title menu
+/// The title menu (Continue, Load Game, New Game, System, Log In): its builder (0x1b4a3d0) adds the
+/// items to a list, each with ADD_ACTION_ITEM, then makes the menu out of it at TITLE_MENU_DONE,
+/// where its paths meet after the optional items: Quit Game goes in there, last.
+constexpr u64 ADD_ACTION_ITEM = 0x1b4c9a0; ///< (list, name+help texts, action std::function, 0) -> list
+constexpr u64 TITLE_MENU_DONE = 0x1b4ad45; ///< the list at rbp + TITLE_LIST, the title screen in r14
+constexpr std::int32_t TITLE_LIST = -0x11f0;
 
 const u8 MsgLookupPrologue[] = {0x89, 0xf0, 0x48, 0x8b, 0x77, 0x08, 0x48, 0x8b, 0x34, 0xc6};
+const u8 TitleMenuDoneCode[] = {0xc6, 0x85, 0xb9, 0xf7, 0xff, 0xff, 0x00}; // mov byte [rbp-0x847], 0
 const u8 AddPageItemPrologue[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
 const u8 RowInputPrologue[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
 
@@ -328,9 +338,12 @@ struct Page
     std::vector<Row> rows; ///< at most the layout's
 };
 std::vector<Page> pages;
+u32 quit_name = 0, quit_help = 0; ///< Quit Game in the title menu (its help line empty, as the game's)
 
 void DefineTexts()
 {
+    quit_name = AddText("Quit Game", "Выйти из игры");
+    quit_help = AddText("", "");
     const u32 off = AddText("Off", "Выкл"), on = AddText("On", "Вкл");
     const std::vector<u32> toggle = {off, on};
     const auto page = [](const char* en, const char* ru, const char* help_en, const char* help_ru, const Layout& layout)
@@ -776,9 +789,14 @@ const char16_t* PS4_SYSV_ABI LookupHook(void* repository, u32 table, u32 categor
         std::printf("Game menu: text %#x/%u%s from %#llx\n", category, id, building_page >= 0 ? " (our page)" : "",
                     (unsigned long long)(reinterpret_cast<u64>(__builtin_return_address(0)) - image_base));
     }
-    if (category == TEXT_NAME && id == SCREEN_SOUND_ITEM && text != nullptr)
+    // The game's language from its System texts: the title menu's (before Quit Game is looked up)
+    // or the System menu's.
+    if (category == TEXT_NAME && (id == SCREEN_SOUND_ITEM || id == TITLE_SYSTEM_ITEM) && text != nullptr)
     {
-        screen_sound_text = text;
+        if (id == SCREEN_SOUND_ITEM)
+        {
+            screen_sound_text = text;
+        }
         bool cyrillic = false;
         for (const char16_t* c = text; *c; ++c)
         {
@@ -820,6 +838,8 @@ void* PS4_SYSV_ABI AddHook(void* menu, void* pair, void* function, void* out)
     return result;
 }
 
+constexpr std::size_t STUB_SIZE = 64; ///< each hook's room in the stub page (Detour, PatchTitleMenu)
+
 /// `jmp hook` at the function (via a near thunk); its moved prologue + `jmp` back is the original.
 bool Detour(unsigned char* image, u64 va, const u8* prologue, std::size_t length, void* hook, void** original,
             u8*& cursor)
@@ -856,7 +876,7 @@ bool Detour(unsigned char* image, u64 va, const u8* prologue, std::size_t length
         site[i] = 0xcc;
     }
     *original = trampoline;
-    cursor += 64;
+    cursor += STUB_SIZE;
     return true;
 }
 
@@ -877,6 +897,129 @@ u8* MapNear(unsigned char* image, u64 image_size, std::size_t size)
         }
     }
     return nullptr;
+}
+
+// ---- Quit Game in the title menu ----
+/// Its action: a std::function target with the eight entries the title's own items have (clone,
+/// clone, call, target type, destroy, destructor, deallocate, target). Choosing it ends the game
+/// as the window's close button does (the overlay's Quit game); the menu gets no next screen, a
+/// null result, which its activation code allows (0x1be9806, 0x1c1a5e6).
+struct QuitAction
+{
+    const void* const* vtable;
+    void* title; ///< what the title's own items keep (not used)
+};
+void* PS4_SYSV_ABI QuitClone(const QuitAction* self, QuitAction* to)
+{
+    QuitAction* copy = to != nullptr ? to : new QuitAction;
+    *copy = *self;
+    return copy;
+}
+void** PS4_SYSV_ABI QuitCall(void** out, QuitAction*, void*)
+{
+    // The menu calls an item's action twice per choice: the game is closed once.
+    static std::atomic<bool> quitting{false};
+    if (quitting.exchange(true) == false)
+    {
+        std::printf("Game menu: Quit Game chosen in the title menu\n");
+        SDL_Event quit{};
+        quit.type = SDL_EVENT_QUIT;
+        SDL_PushEvent(&quit);
+    }
+    *out = nullptr;
+    return out;
+}
+void* PS4_SYSV_ABI QuitTargetType(const QuitAction*)
+{
+    return nullptr;
+}
+void PS4_SYSV_ABI QuitDestroy(QuitAction* self, int deallocate)
+{
+    if (deallocate != 0)
+    {
+        delete self;
+    }
+}
+void PS4_SYSV_ABI QuitDestructor(QuitAction*)
+{
+}
+void PS4_SYSV_ABI QuitDeallocate(QuitAction* self)
+{
+    delete self;
+}
+void** PS4_SYSV_ABI QuitTarget(QuitAction* self)
+{
+    return &self->title;
+}
+const void* const QUIT_VTABLE[] = {
+    reinterpret_cast<const void*>(&QuitClone),      reinterpret_cast<const void*>(&QuitClone),
+    reinterpret_cast<const void*>(&QuitCall),       reinterpret_cast<const void*>(&QuitTargetType),
+    reinterpret_cast<const void*>(&QuitDestroy),    reinterpret_cast<const void*>(&QuitDestructor),
+    reinterpret_cast<const void*>(&QuitDeallocate), reinterpret_cast<const void*>(&QuitTarget)};
+
+/// At TITLE_MENU_DONE (the game's code, System V ABI): Quit Game after the builder's items.
+void PS4_SYSV_ABI AddQuitItem(void* list, void* title)
+{
+    using AddAction = void*(PS4_SYSV_ABI*)(void*, void*, void*, u64);
+    alignas(16) u8 pair[2 * TEXT_SIZE] = {};
+    MakeTexts(pair, quit_name, quit_help);
+    alignas(16) u8 function[FUNCTION_SIZE] = {};
+    *reinterpret_cast<const void* const**>(function) = QUIT_VTABLE;
+    *reinterpret_cast<void**>(function + 8) = title;
+    *reinterpret_cast<void**>(function + 0x20) = function;
+    Game<AddAction>(ADD_ACTION_ITEM)(list, pair, function, 0);
+    DestroyFunction(function);
+    DestroyTexts(pair);
+}
+
+/// `jmp` at TITLE_MENU_DONE to a stub: the instruction it replaced, AddQuitItem(rbp + TITLE_LIST,
+/// r14), `jmp` back. Nothing in caller-saved registers is used after that point, and the
+/// builder's frame keeps the stack 16-byte aligned there.
+bool PatchTitleMenu(unsigned char* image, u8*& cursor)
+{
+    u8* site = image + TITLE_MENU_DONE;
+    if (std::memcmp(site, TitleMenuDoneCode, sizeof(TitleMenuDoneCode)) != 0)
+    {
+        std::printf("Game menu: unexpected code at %#llx, no Quit Game in the title menu\n",
+                    (unsigned long long)TITLE_MENU_DONE);
+        return false;
+    }
+    u8* at = cursor;
+    const auto put = [&at](const void* bytes, std::size_t length)
+    {
+        std::memcpy(at, bytes, length);
+        at += length;
+    };
+    const u8 lea_rdi_rbp[] = {0x48, 0x8d, 0xbd}; // lea rdi, [rbp + disp32]
+    const u8 mov_rsi_r14[] = {0x4c, 0x89, 0xf6};
+    const u8 movabs_rax[] = {0x48, 0xb8};
+    const u8 call_rax[] = {0xff, 0xd0};
+    const void* const target = reinterpret_cast<const void*>(&AddQuitItem);
+    put(TitleMenuDoneCode, sizeof(TitleMenuDoneCode));
+    put(lea_rdi_rbp, sizeof(lea_rdi_rbp));
+    put(&TITLE_LIST, sizeof(TITLE_LIST));
+    put(mov_rsi_r14, sizeof(mov_rsi_r14));
+    put(movabs_rax, sizeof(movabs_rax));
+    put(&target, sizeof(target));
+    put(call_rax, sizeof(call_rax));
+    const std::int64_t back = std::int64_t(site + sizeof(TitleMenuDoneCode)) - std::int64_t(at + 5);
+    const std::int64_t to = std::int64_t(cursor) - std::int64_t(site + 5);
+    if (back != std::int32_t(back) || to != std::int32_t(to))
+    {
+        std::printf("Game menu: stubs out of jump range, no Quit Game in the title menu\n");
+        return false;
+    }
+    const std::int32_t back32 = std::int32_t(back), to32 = std::int32_t(to);
+    *at++ = 0xe9; // jmp rel32
+    put(&back32, sizeof(back32));
+    site[0] = 0xe9;
+    std::memcpy(site + 1, &to32, sizeof(to32));
+    for (std::size_t i = 5; i < sizeof(TitleMenuDoneCode); ++i)
+    {
+        site[i] = 0xcc; // never reached: the stub jumps back past it
+    }
+    cursor += STUB_SIZE;
+    return true;
 }
 
 } // namespace
@@ -923,9 +1066,12 @@ void PatchImage(unsigned char* image, std::uint64_t size)
                reinterpret_cast<void*>(&AddHook), reinterpret_cast<void**>(&add_original), cursor) &&
         Detour(image, ROW_INPUT, RowInputPrologue, sizeof(RowInputPrologue), reinterpret_cast<void*>(&RowInputHook),
                reinterpret_cast<void**>(&row_input_original), cursor);
+    // BB_TITLE_QUIT=0: the title menu as the game has it (no Quit Game).
+    const char* quit_env = std::getenv("BB_TITLE_QUIT");
+    const bool quit = (quit_env != nullptr && quit_env[0] == '0') == false && PatchTitleMenu(image, cursor);
     mprotect(stubs, page, PROT_READ | PROT_EXEC);
-    std::printf("Game menu: %s (%zu pages in System)\n", ok ? "the port's pages are in" : "hooks failed, off",
-                pages.size());
+    std::printf("Game menu: %s (%zu pages in System)%s\n", ok ? "the port's pages are in" : "hooks failed, off",
+                pages.size(), quit ? "; Quit Game in the title menu" : "");
 }
 
 void Poll()

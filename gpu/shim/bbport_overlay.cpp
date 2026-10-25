@@ -1005,13 +1005,15 @@ void FpsCounter()
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
                      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
     const BbSettings::Values& s = BbSettings::Get();
+    // DLSS by the generation it runs ("DLSS 4.5"), once the renderer knows it.
+    const char* dlss_name = s.dlss_name.load();
     ImGui::Text(BbSettings::MenuText("%.0f FPS  %.1f ms  %s", "%.0f FPS  %.1f мс  %s"),
                 frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f, frame_ms_avg,
                 s.upscaler == BbSettings::UpscalerFsr3     ? "FSR 3.1"
                 : s.upscaler == BbSettings::UpscalerFsr4   ? "FSR 4"
                 : s.upscaler == BbSettings::UpscalerFsr411 ? "FSR 4.1.1"
                 : s.upscaler == BbSettings::UpscalerTaa    ? "TAA"
-                : s.upscaler == BbSettings::UpscalerDlss   ? "DLSS"
+                : s.upscaler == BbSettings::UpscalerDlss   ? (dlss_name != nullptr ? dlss_name : "DLSS")
                                                            : "");
     ImGui::End();
 }

@@ -20,6 +20,7 @@
 #include "../../../dlss_bridge/bbport_dlss_bridge.h"
 #elif defined(__linux__)
 #include <dlfcn.h>
+#include <charconv>
 #include "../../../dlss_bridge/bbport_dlss_bridge.h"
 #endif
 
@@ -63,11 +64,53 @@ void* FindSymbol(Module module, const char* name)
 {
     return reinterpret_cast<void*>(GetProcAddress(module, name));
 }
+
+// nvngx_dlss.dll keeps its version in its resources, not in its name: not read here.
+std::string NgxFileVersion(const std::filesystem::path&)
+{
+    return {};
+}
 #else
 // bbport (Linux): libbbport_dlss.so (gpu/dlss_bridge) and NVIDIA's libnvidia-ngx-dlss.so.<version>
 // next to bb-probe; NGX finds the latter through the bridge's path list.
 constexpr char BRIDGE_NAME[] = "libbbport_dlss.so";
+constexpr std::string_view NGX_PREFIX = "libnvidia-ngx-dlss.so.";
 using Module = void*;
+
+/// "310.10.0" as {310, 10, 0}: versions compared number by number.
+std::vector<u32> VersionParts(std::string_view version)
+{
+    std::vector<u32> parts;
+    while (version.empty() == false)
+    {
+        const size_t dot = version.find('.');
+        const std::string_view part = version.substr(0, dot);
+        u32 value = 0;
+        std::from_chars(part.data(), part.data() + part.size(), value);
+        parts.push_back(value);
+        if (dot == std::string_view::npos) break;
+        version.remove_prefix(dot + 1);
+    }
+    return parts;
+}
+
+/// The newest libnvidia-ngx-dlss.so.<version> in `directory`: its version, else empty.
+std::string NgxFileVersion(const std::filesystem::path& directory)
+{
+    std::string newest;
+    std::error_code error;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(directory, error))
+    {
+        const std::string name = entry.path().filename().string();
+        if (name.starts_with(NGX_PREFIX) == false) continue;
+        const std::string version = name.substr(NGX_PREFIX.size());
+        if (newest.empty() || VersionParts(newest) < VersionParts(version))
+        {
+            newest = version;
+        }
+    }
+    return newest;
+}
 
 std::filesystem::path ExecutableDirectory()
 {
@@ -80,7 +123,7 @@ bool HasNgx(const std::filesystem::path& directory)
     std::error_code error;
     for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(directory, error))
     {
-        if (entry.path().filename().string().starts_with("libnvidia-ngx-dlss.so."))
+        if (entry.path().filename().string().starts_with(NGX_PREFIX))
         {
             return true;
         }
@@ -196,6 +239,7 @@ struct Dlss::Impl
     std::vector<std::string> instance_extensions, device_extensions;
     std::optional<FeatureDesc> feature;
     std::string problem;
+    std::string version; ///< of NVIDIA's library handed to NGX (Version)
     bool eligible{true}, instance_ready{}, device_ready{}, initialized{}, available{};
 
     void Disable(std::string_view reason)
@@ -256,7 +300,8 @@ Dlss::Dlss() : impl{std::make_unique<Impl>()}
     const std::filesystem::path data = UserDlssDirectory();
     std::error_code error;
     std::filesystem::create_directories(data, error);
-    std::printf("DLSS: NVIDIA's library from %s\n", ngx.string().c_str());
+    impl->version = NgxFileVersion(ngx);
+    std::printf("DLSS: NVIDIA's library %s from %s\n", impl->version.c_str(), ngx.string().c_str());
     if (impl->api->Configure(ngx.wstring().c_str(), data.wstring().c_str(), BridgeLog) == 0)
     {
         impl->Disable("bridge configuration failed");
@@ -344,6 +389,11 @@ bool Dlss::Available() const
 std::string Dlss::Problem() const
 {
     return impl->problem;
+}
+
+std::string Dlss::Version() const
+{
+    return impl->version;
 }
 
 bool Dlss::HasFeature(const FeatureDesc& desc) const
@@ -439,6 +489,10 @@ bool Dlss::Available() const
     return false;
 }
 std::string Dlss::Problem() const
+{
+    return {};
+}
+std::string Dlss::Version() const
 {
     return {};
 }

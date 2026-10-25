@@ -13,6 +13,7 @@
 #   BBPC_APPIMAGE_FSR4=0      leave out the FSR 4 v07 assets (tools/fetch_fsr4_assets.sh, MIT)
 #   BBPC_APPIMAGE_FSR4CAP=0   leave out the prebuilt FSR 4.1.1 tools (dxil-spirv, fsr4cap.exe)
 #   DLSS_SDK_ROOT=<dir>       with the DLSS bridge and NVIDIA's runtime library
+#                             (bash tools/fetch_dlss_sdk.sh <dir> fetches the SDK)
 #
 # The AppImage runs on distributions whose glibc is at least as new as the one it was built on.
 #
@@ -64,9 +65,18 @@ cmake --build "${BUILD_DIR}"
 info "Installing into the AppDir..."
 rm -rf "${APPDIR}"
 DESTDIR="${APPDIR}" cmake --install "${BUILD_DIR}"
+# With the DLSS SDK the package must carry DLSS: a release without it falls back to FSR silently.
+if [[ -n ${DLSS_SDK_ROOT:-} ]]; then
+    [[ -f "${PORT_DIR}/bin/libbbport_dlss.so" && -f "${PORT_DIR}/NVIDIA-DLSS-LICENSE.txt" ]] &&
+        compgen -G "${PORT_DIR}/bin/libnvidia-ngx-dlss.so.*" >/dev/null ||
+        die "DLSS_SDK_ROOT is set, but the DLSS bridge, NVIDIA's library or its license was not installed"
+    info "DLSS: the bridge and NVIDIA's library are in"
+fi
 # Debug info names the build environment and is most of the binaries' size; the symbols stay
-# for crash reports.
-find "${PORT_DIR}/bin" -type f \( -name '*.so*' -o -perm -u+x \) -exec strip --strip-debug {} +
+# for crash reports. NVIDIA's DLSS library stays as NVIDIA built it: NGX refuses a changed copy
+# (FAIL_NotImplemented, DLSS reported as unsupported).
+find "${PORT_DIR}/bin" -type f \( -name '*.so*' -o -perm -u+x \) ! -name 'libnvidia-ngx-dlss.so.*' \
+     -exec strip --strip-debug {} +
 strip --strip-debug "${APPDIR}/usr/bin/bbpc"
 
 # -- FSR 4.1.1 tools, prebuilt: the launcher's "Choose DLL..." then needs no compiler -----------
@@ -190,6 +200,14 @@ rm -f "${APPDIR}"/usr/lib/libvulkan.so*
 rm -f "${APPDIR}/AppRun"
 cp "${ROOT}/packaging/appimage/AppRun" "${APPDIR}/AppRun"
 chmod +x "${APPDIR}/AppRun"
+
+# NGX loads only NVIDIA's own file: the packaged copy must be the SDK's, byte for byte.
+if [[ -n ${DLSS_SDK_ROOT:-} ]]; then
+    for library in "${PORT_DIR}"/bin/libnvidia-ngx-dlss.so.*; do
+        cmp -s "${library}" "${DLSS_SDK_ROOT}/lib/Linux_x86_64/rel/$(basename "${library}")" ||
+            die "$(basename "${library}") in the AppDir differs from the DLSS SDK's: NGX would refuse it"
+    done
+fi
 
 # -- AppImage ------------------------------------------------------------------
 mkdir -p "${OUTPUT_DIR}"

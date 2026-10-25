@@ -26,6 +26,15 @@ namespace UpscalerAssets
     // The version part of a libnvidia-ngx-dlss.so.<version> file name.
     QString ngxVersion(const QFileInfo& library);
 
+    // The DLSS runtime the game uses (gpu/upscale/vk_dlss.cpp): the player's own newest one, else
+    // the package's newest; an empty QFileInfo when there is none.
+    QFileInfo ngxInUse(const QString& ownDirectory, const QString& packageDirectory);
+
+    // The DLSS generation the game shows ("4.5") for a library version and a preset (0 Native AA
+    // .. 4 Ultra Performance, DLSS's quality modes): gpu/upscale/dlss_generation.h. Empty when
+    // the version is not known there.
+    QString dlssGeneration(const QString& libraryVersion, int preset);
+
     // True when the file starts like an ELF binary.
     bool isElf(const QString& path);
 }

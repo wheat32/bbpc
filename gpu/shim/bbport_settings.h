@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace BbSettings
 {
@@ -175,6 +176,9 @@ struct Values
     /// DLSS (gpu/dlss_bridge, NVIDIA RTX) is ready, or why not (null before the device exists).
     std::atomic<bool> dlss_supported{false};
     std::atomic<const char*> dlss_problem{nullptr};
+    /// DLSS by the generation it runs ("DLSS 4.5", upscale/dlss_generation.h), or null. Set by the
+    /// renderer.
+    std::atomic<const char*> dlss_name{nullptr};
 
     /// Startup settings for the explicit BB_RENDER_RES compatibility patch only.
     int startup_preset = NativeAA;
@@ -197,6 +201,8 @@ void Load();
 void ConfigureUpscalerSupport(bool fsr4, bool fsr411);
 /// After device creation: DLSS availability; a DLSS setting falls back to FSR 3.1 without it.
 void ConfigureDlssSupport(bool available, const char* problem);
+/// DLSS's name for the overlay ("DLSS 4.5"; empty: not known).
+void SetDlssName(std::string_view name);
 /// Startup-patched scene dimensions cannot change until run.sh prepares a new image.
 bool FixedRenderSession();
 int RenderPreset();

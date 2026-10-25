@@ -6,6 +6,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -467,6 +470,15 @@ void ConfigureDlssSupport(bool available, const char* problem)
                     kept.empty() ? "the DLSS bridge or NVIDIA's DLSS library is missing" : kept.c_str());
         v.upscaler = UpscalerFsr3;
     }
+}
+
+void SetDlssName(std::string_view name)
+{
+    // Every name stays for the process: the overlay may still be printing an earlier one.
+    static std::mutex mutex;
+    static std::set<std::string, std::less<>> names;
+    std::scoped_lock lock{mutex};
+    Get().dlss_name = name.empty() ? nullptr : names.emplace(name).first->c_str();
 }
 
 bool FixedRenderSession()

@@ -6,6 +6,8 @@
 #include <algorithm>
 
 #include "outputSizes.h"
+// The game's own table (header only, the standard library alone), so both name DLSS alike.
+#include "../../gpu/upscale/dlss_generation.h"
 
 namespace
 {
@@ -101,6 +103,26 @@ QFileInfoList UpscalerAssets::ngxLibraries(const QString& directory)
         return versionParts(ngxVersion(a)) < versionParts(ngxVersion(b));
     });
     return libraries;
+}
+
+QFileInfo UpscalerAssets::ngxInUse(const QString& ownDirectory, const QString& packageDirectory)
+{
+    for (const QString& directory : { ownDirectory, packageDirectory })
+    {
+        const QFileInfoList libraries = ngxLibraries(directory);
+        if (libraries.isEmpty() == false)
+        {
+            return libraries.last();
+        }
+    }
+    return {};
+}
+
+QString UpscalerAssets::dlssGeneration(const QString& libraryVersion, int preset)
+{
+    const QByteArray version = libraryVersion.toLatin1();
+    const std::string_view generation = DlssGeneration::Of({version.constData(), size_t(version.size())}, preset);
+    return QString::fromLatin1(generation.data(), qsizetype(generation.size()));
 }
 
 bool UpscalerAssets::isElf(const QString& path)

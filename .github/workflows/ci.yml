@@ -35,8 +35,14 @@ jobs:
           # Lavapipe: a software Vulkan driver for the tests that create a Vulkan instance.
           pacman -S --noconfirm --needed vulkan-swrast
 
+      - name: Fetch the NVIDIA DLSS SDK
+        # The DLSS bridge and NVIDIA's runtime library go into the packages (with NVIDIA's license).
+        run: |
+          bash tools/fetch_dlss_sdk.sh "$RUNNER_TEMP/dlss-sdk"
+          echo "DLSS_SDK_ROOT=$RUNNER_TEMP/dlss-sdk" >> "$GITHUB_ENV"
+
       - name: Configure
-        run: cmake --preset release -DBBPC_BUILD_TESTS=ON -DBB_LTO=OFF
+        run: cmake --preset release -DBBPC_BUILD_TESTS=ON -DBB_LTO=OFF -DDLSS_SDK_ROOT="$DLSS_SDK_ROOT"
 
       - name: Build
         run: cmake --build --preset release --parallel
@@ -53,6 +59,9 @@ jobs:
           test -f out/gpu/libbbgpu.so
           test -f out/gpu/libbbnet20.so
           test -f out/launcher/bbpc
+          test -f out/libbbport_dlss.so
+          test -f out/NVIDIA-DLSS-LICENSE.txt
+          ls out/libnvidia-ngx-dlss.so.*
 
       - name: Package the installed tree
         run: |
@@ -88,6 +97,12 @@ jobs:
         run: |
           bash packaging/arch/install-deps.sh
           pacman -S --noconfirm --needed wget file
+
+      - name: Fetch the NVIDIA DLSS SDK
+        # The DLSS bridge and NVIDIA's runtime library go into the packages (with NVIDIA's license).
+        run: |
+          bash tools/fetch_dlss_sdk.sh "$RUNNER_TEMP/dlss-sdk"
+          echo "DLSS_SDK_ROOT=$RUNNER_TEMP/dlss-sdk" >> "$GITHUB_ENV"
 
       - name: Build AppImage x86_64
         run: bash packaging/appimage/build-appimage.sh

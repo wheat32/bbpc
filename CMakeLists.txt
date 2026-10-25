@@ -141,9 +141,10 @@ if (BBPC_BUILD_PORT)
     if (TARGET bbport_dlss)
         # NVIDIA's RTX SDK license allows the runtime library in an application; its text goes along.
         install(TARGETS bbport_dlss LIBRARY DESTINATION "${BBPC_PORT_DESTINATION}/bin")
+        # file(INSTALL) adds DESTDIR itself, as the rules install() writes do.
         install(CODE "file(GLOB BBPC_NGX_LIBRARIES \"${CMAKE_BINARY_DIR}/libnvidia-ngx-dlss.so.*\")
                       file(INSTALL \${BBPC_NGX_LIBRARIES}
-                           DESTINATION \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${BBPC_PORT_DESTINATION}/bin\")")
+                           DESTINATION \"\${CMAKE_INSTALL_PREFIX}/${BBPC_PORT_DESTINATION}/bin\")")
         install(FILES "${CMAKE_BINARY_DIR}/NVIDIA-DLSS-LICENSE.txt" DESTINATION "${BBPC_PORT_DESTINATION}")
     endif()
     install(FILES LICENSE README.md DESTINATION "${BBPC_PORT_DESTINATION}")
@@ -175,7 +176,7 @@ if (BBPC_BUILD_TESTS AND BBPC_BUILD_PORT)
 
     # The GPU library's tests: neither launches the game nor needs a Vulkan device.
     set(BBPC_GPU_TESTS motion-history-test ui-composition-test cp-decoder-test fx-init-clear-test
-        effect-flags-test settings-test upscaler-support-test scene-resolution-test
+        effect-flags-test dlss-generation-test settings-test upscaler-support-test scene-resolution-test
         motion-shader-test taa-shader-test camera-motion-test translation-memory-test
         srt-walker-fault-test)
     foreach (test IN LISTS BBPC_GPU_TESTS)

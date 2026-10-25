@@ -41,6 +41,9 @@ public:
     [[nodiscard]] bool Available() const;
     /// Why DLSS cannot run on this system (empty when it can, or before device creation).
     [[nodiscard]] std::string Problem() const;
+    /// The version of NVIDIA's library handed to NGX (libnvidia-ngx-dlss.so.<version>, the newest
+    /// in its folder); empty when unknown.
+    [[nodiscard]] std::string Version() const;
 
     struct Resource
     {
