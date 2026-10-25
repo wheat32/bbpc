@@ -198,6 +198,9 @@ public:
     void UnmapMemory(VAddr cpu_addr, size_t size);
     /// Writes back the images queued for it (BB_READBACK_LINEAR_IMAGES).
     void ProcessDownloadImages();
+    /// Downloads the GPU made into the game's memory in place so far (it writes there when it
+    /// runs them): Rasterizer::OnSubmit tells from it whether the submission's cache work did.
+    [[nodiscard]] u64 InPlaceDownloads() const { return in_place_downloads.load(std::memory_order_relaxed); }
 
     // Surface metadata (CMASK, FMASK, HTILE) of bound targets.
 
@@ -393,6 +396,7 @@ private:
     std::mutex download_mutex;
     std::unordered_set<ImageId> download_images;
     std::atomic<bool> downloads_queued{false}; ///< checked without the lock
+    std::atomic<u64> in_place_downloads{0};    ///< InPlaceDownloads()
 
     // Garbage collection.
     Common::LeastRecentlyUsedCache<ImageId, u64> lru_cache;

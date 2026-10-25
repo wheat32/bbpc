@@ -32,6 +32,11 @@ frame times, CPU use per thread and GPU utilization. Two profilers go with it:
 Both cost a few percent themselves; measure FPS without them. A single run in one place varies by
 a few FPS: compare at least two runs before trusting a small difference.
 
+Start the benchmark where nothing polls the game's memory: the Claude desktop app reads the
+memory map of every process its sessions start (1.5), which gives 40-90 ms frames that are not the
+port's. `BB_STALL_SAMPLES=1` (with `BB_FRAME_STATS`) lists what every thread did during a frame
+over 40 ms.
+
 ## Where it stands (2026-10-24)
 
 Reference machine, `upscaler=dlss preset=1` (DLSS Quality), output 2560x1440, uncapped, standing
@@ -107,14 +112,36 @@ the two wait for each other comes first (`BB_TIMELINE`).
    (presets without a restart) stay an option.
 2. **The every-third-frame pattern.** Explained (2026-10-24): not a stall but the GPU limit seen
    from the CPU side (see above). Nothing to fix by itself; phase 2 is what moves it.
-3. **DLSS in every build.** Local builds get it with `DLSS_SDK_ROOT` (a 60 MB partial checkout of
-   github.com/NVIDIA/DLSS: `include/`, `lib/Linux_x86_64/libnvsdk_ngx.a`,
-   `lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.*`, `LICENSE.txt`); the CI and the AppImage should
-   fetch the same files. The launcher should say when DLSS falls back to FSR 3.1: it happened
-   silently.
+3. **DLSS in every build.** Done for the packages (0.7.2): `tools/fetch_dlss_sdk.sh` fetches the
+   files the build needs (a 60 MB partial checkout of github.com/NVIDIA/DLSS: `include/`,
+   `lib/Linux_x86_64/libnvsdk_ngx.a`, `lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.*`,
+   `LICENSE.txt`) for local builds, the CI and the AppImage. Still to do: the launcher should say
+   when DLSS falls back to FSR 3.1; it happens silently.
 4. **PGO.** A profile from a few minutes of play cuts stage A's time per draw by ~5%
    (`BB_PGO=generate`, see `docs/parallel_gpu.md`). It needs the game to collect, so only local
    builds can have it.
+5. **The ~70 ms frames while standing still.** Explained (2026-10-25): another process reading the
+   game's memory map. The Claude desktop app reads `/proc/<pid>/smaps_rollup` of the processes
+   its sessions start, every ~55 s; for the game (13 GB resident) the kernel walks its page tables
+   for ~105 ms with its address space lock held. Whatever in the game needs that lock for writing
+   meanwhile waits: the malloc heap's `brk` (holding the one arena's lock, so every allocating
+   thread waited too: stage A, the draw workers, the game's threads), the write traps' `mprotect`
+   (layer, texture cache, the trap handler) and layer promotions. Runs started outside such a
+   process tree had no frame over 19 ms in ~11 minutes of standing still; inside it nearly every
+   run had one or two of 40-90 ms. A system monitor showing per-process memory would do the same.
+   - Done: the heap no longer gives its top back to the kernel and takes it again over 110 times
+     a second (glibc's 128 KiB trim threshold; `M_TRIM_THRESHOLD` 64 MiB and `M_TOP_PAD` 16 MiB
+     in `src/probe.c`): no `brk` while standing still, and ~16,000 fewer page faults a second.
+     Under the desktop app's reads, two runs of 120 s had no long frame (two and four before);
+     FPS unchanged (the GPU is the limit).
+   - Still open: the write traps and promotions change protections with `mprotect`, which needs
+     the lock for writing. Five reads in a row still gave five 40-85 ms frames. Write protection
+     through userfaultfd (`UFFDIO_WRITEPROTECT` needs the lock only for reading; the page watch
+     has it as `BB_UFFD=1`) for the runtime's traps would remove them.
+   - `BB_STALL_SAMPLES=1` samples every thread each millisecond once a frame is past 25 ms
+     (`/proc/self/task/*/syscall`: the system call and where it was made, or running) and prints
+     what was not asleep with the stall report. It allocates nothing, so it keeps sampling while
+     the other threads wait for the malloc arena.
 
 ## Phase 2: GPU work (target: about -2 ms)
 
@@ -207,9 +234,61 @@ the two wait for each other comes first (`BB_TIMELINE`).
      NVIDIA workarounds, these passes) gave much less FPS than the profiler's numbers promised, or
      none. The frame rate also depends on when the work reaches the GPU. `BB_TIMELINE=<file>`
      (guest submissions and waits, decoding, Vulkan submissions, GPU completion) shows where the
-     GPU waits for work: the next measurement.
+     GPU waits for work: item 5.
 4. **The upscaler.** DLSS Quality costs ~1 ms on this GPU; lower presets mainly shrink the scene
    passes, which are a small part of the frame.
+5. **Where the GPU waits for work (`BB_TIMELINE`).** Measured (2026-10-24) at a busier spot (the
+   reference save moved there: 2,755 draws a frame, 104 FPS against 134 at the old spot). The GPU
+   was idle at least 2.56 ms per frame, in ~10 gaps, while stage A never ran out of work and the
+   game waited 7.7 ms a frame for the previous one. The gaps came from constant RAM dumps that
+   waited for the GPU (`WaitForInPlaceReads`: ~138 a second, ~170 ms of stage A's time a second):
+   each one let the GPU's queue run empty, and the GPU then waited for stages A and B to refill
+   it. With that wait off (unsafe, a measurement only: `BB_CONSTRAM_GPU_WAIT=0`) the benchmark
+   gave 117.2 FPS against 104.0, and the GPU's idle time fell to 0.11 ms per frame.
+   - Why they waited: a probe naming each wait's read found none that overlapped the dump. 80%
+     came from the pending-read table's hashing. The dumps all go to one ring (190 KiB, ~13,000
+     dumps a second) that no noted read touched (0 of 30.7 million), but reads elsewhere, mostly
+     170 KiB buffers, shared the table slots of the ring's granules: a dump found them and waited
+     for the GPU to run them. The other 20% follow the end-of-submission task (`OnSubmit`: fault
+     buffer, image downloads, garbage collection), which counts as reading memory it does not list
+     (`untracked_reads_packet`).
+   - Done (2026-10-24) for the first: around the dumps the table keeps reads exactly
+     (`gpu/render/pending_reads.h`: windows of 1 MiB around the first dumps, 64-byte granules,
+     no hashing; `BB_CONSTRAM_WINDOWS=0` turns them off). A dump there waits only for reads of its
+     bytes; reads noted before a window opened still come from the hashed tables.
+     `tests/test_pending_reads.cpp` checks that a write never waits for less than every read of
+     its bytes (random reads and writes against an exact list) and, in a window, for nothing past
+     its granules. Three alternating runs each: 117.5 FPS average against 107.7 (+9%), the median
+     frame 8.1 against 9.2 ms, the GPU 94-95% busy against 85-90%, dumps waiting for the GPU 4-25
+     a second against 97-147; screenshots of the spot unchanged. In the timeline the GPU is idle
+     0.30 ms per frame (2.56 before), and frames come 8.3 ms apart with a spread of 0.65 ms (10.7
+     and 1.3 ms before).
+   - The benchmark's frame times (`BB_FRAME_LOG`, `bench_stats.py`) are taken when stage A hands
+     a flip to the presenter, so they also show where stage A waits. With the windows alone their
+     "1% low" fell (77 against 83 FPS) although the frames the game makes and the GPU finishes came
+     more evenly than before: the dumps' remaining GPU waits (below) now held stage A for a whole
+     frame of GPU work every few frames. The timeline's `FrameRetired` intervals show what reaches
+     the screen.
+   - Every run, before and after, has one or two ~70 ms frames while standing still: some with
+     stage A 20-40 ms in the kernel without page faults or protection changes, some in the layer
+     memory's traps (60 ms, 3 `mprotect` calls). Not explained yet.
+   - Done (2026-10-25) for the second: the end-of-submission task (`OnSubmit`, then a flush)
+     reads guest memory only on the recording thread. Its GPU wait came from the mark for reads a
+     packet does not list, which the GPU wait was added for (draws whose GPU reads are not listed).
+     A task reading guest memory (`RunInOrder`'s `reads_guest_memory`, only this task) now makes a
+     dump wait for the recording thread to have run it (`task_reads_packet`), and draws keep the
+     GPU wait. What the task hands the GPU that writes the game's memory (in-place image downloads,
+     also the garbage collector's) still comes before the dump: `OnSubmit` notes the tick when it
+     downloaded anything, and the dump waits for the GPU to have run it
+     (`WaitForSubmissionWrites`; not needed once in these runs). `BB_CONSTRAM_TASK_GPU=1` brings the
+     old wait back. Three alternating runs each: 120.4 FPS average against 119.6 (the GPU is the
+     limit, 96% busy), but a 1% low of 92 against 77 FPS, the 99th percentile frame 10.2-11.9
+     against 12.8-13.1 ms, and 19-44 frames over 12 ms against 252-380; dumps waiting for the GPU
+     none against 9-30 a second; screenshots of the spot unchanged. Both parts together, against
+     the start: 120.4 against 107.7 FPS average (+12%), 1% low 92 against 83 FPS.
+   - Still open: none of these waits covers stages that read memory through pointers when the
+     GPU runs them (`uses_dma`; `BB_EXP_DMA_UNTRACKED=1` is the experiment that would). None ran
+     at this spot.
 
 ## Phase 3: translate the graphics API instead of the command packets
 
@@ -259,11 +338,12 @@ and replays, methods inlined into the engine, packets written outside the method
 | Step | Kind | Expected effect |
 |---|---|---|
 | 1.1 Live resolution off by default (done) | setting | +11% FPS, no 90 ms hitches |
-| 1.3 DLSS in every build, fallback shown | build | DLSS where the player chose it |
+| 1.3 DLSS in every build (done in 0.7.2), fallback shown | build | DLSS where the player chose it |
+| 1.5 The ~70 ms frames (explained): malloc trim threshold (done) | heap | no `brk` or its page faults while playing; fewer stalls when something reads the memory map |
 | 2.1 Render-target copies (done) | GPU, no emulation | -0.85 ms GPU per frame, 120 to 134 FPS |
 | 2.2 Idle gaps between submissions (measured) | GPU | none measurable: ~0.3 ms idle left |
 | 2.3 Translated shader costs (shadow maps, `fefebf9f`, NVIDIA workarounds measured) | GPU | none so far: shadow maps unchanged, `fefebf9f` at most +2.5%, NVIDIA workarounds ~0.1 ms each (kept for accuracy) |
 | 2.3 Passes without targets (depth decompressions, measured) | GPU | none: skipping them changed nothing |
-| 2.5 Where the GPU waits for work (`BB_TIMELINE`) | measurement | decides what limits the frame rate |
+| 2.5 Where the GPU waits for work (`BB_TIMELINE`): exact dump checks, task reads waited for on stage B (done) | stage A, no emulation change | +12% FPS and 1% low 83 to 92 FPS at a busy spot; GPU idle 2.56 to 0.30 ms per frame |
 | 3.x Graphics API translation | CPU, no emulation | most of stage A |
 | 4.x Install-time conversion | no emulation | load times, stutter, less code |

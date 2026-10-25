@@ -697,6 +697,14 @@ void runtime_restart(void)
 #endif
 }
 
+enum
+{
+    /* The heap's free top kept up to this much before brk gives it back (glibc: 128 KiB). */
+    HEAP_TRIM_THRESHOLD = 64 << 20,
+    /* What the heap grows by beyond a request (glibc: 128 KiB). */
+    HEAP_TOP_PAD = 16 << 20,
+};
+
 int main(int argc, char** argv)
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -705,6 +713,14 @@ int main(int argc, char** argv)
        non-PIE brk heap, i.e. below 1 TiB: the guest packs pointers into 40 bits. */
     mallopt(M_ARENA_MAX, 1);
     mallopt(M_MMAP_THRESHOLD, 32 * 1024 * 1024);
+    /* With glibc's trim threshold the heap's top went back to the kernel and came back over 110
+       times a second (~570 KiB each, page faults to zero it again every time). Each brk takes the
+       address space lock for writing while the one arena's lock is held: when a process reading
+       this one's memory map (smaps_rollup, ~100 ms for 13 GB: a system monitor, the Claude
+       desktop app every ~55 s) held the address space lock, every thread allocating memory
+       waited with it (40-90 ms frames). */
+    mallopt(M_TRIM_THRESHOLD, HEAP_TRIM_THRESHOLD);
+    mallopt(M_TOP_PAD, HEAP_TOP_PAD);
 #endif
     if (argc == 2 && strcmp(argv[1], "--vulkan-only") == 0)
     {

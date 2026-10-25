@@ -29,6 +29,7 @@ class CommandProcessor;
 #include "render/vk_constant_ring.h"
 #include "upscale/vk_scene_resolution.h"
 #include "upscale/vk_object_motion.h"
+#include "render/pending_reads.h"
 #include "render/vk_draw_pipe.h"
 #include "render/vk_draw_prep.h"
 #include "upscale/vk_temporal_upscaler.h"
@@ -122,6 +123,11 @@ public:
     /// Stage A, the game's memory in place: waits until the GPU has run `packet` (drawn reading in
     /// place what a CPU write is about to replace), when it has not yet.
     void WaitForInPlaceReads(u64 packet);
+    /// Stage A, the same for the image downloads of the last submission's end
+    /// (submission_writes_tick): a CPU write lands after them.
+    void WaitForSubmissionWrites();
+    /// Stage A: until the GPU has run `tick` (the recording thread submits it first if needed).
+    void WaitForGpuTick(u64 tick);
     /// NoteCommandWrite for a write made on stage A: handed to the recording thread in order (a copy
     /// of the bytes) instead of draining it first.
     void NoteCommandWriteInOrder(VAddr addr, const void* data, u64 size);
@@ -165,8 +171,9 @@ public:
     /// thread while the draw pipeline is in use (PipelinedTasks), else here after a drain.
     using OrderedTask = void (*)(Rasterizer& rasterizer, const u8* data);
     /// Returns true when the task was handed to the recording thread (not run yet).
-    /// `reads_guest_memory`: the task may read guest memory (a CPU write on stage A over memory
-    /// waits for it, WaitForPendingReads); false for fences, flips and signals.
+    /// `reads_guest_memory`: the task may read guest memory when the recording thread runs it (a
+    /// CPU write on stage A over memory waits for the recording thread to have run it, not for
+    /// the GPU: WaitForPendingReads); false for fences, flips and signals.
     bool RunInOrder(OrderedTask task, const void* data, u32 size, u64 toggle = BbToggle::PipelinedTasks,
                     bool reads_guest_memory = true);
     /// Stage A: the draw pipe position after the last handed-over packet, and whether the
@@ -690,96 +697,7 @@ private:
     {
         return ring == 0 ? constant_ring->Handle() : worker_rings[ring - 1]->Handle();
     }
-    /// Stage A: the newest draw pipe packet that reads guest memory, hashed per granule: 256 bytes
-    /// for bindings up to 4 KiB, 16 KiB up to 256 KiB, 1 MiB above (a note costs a few granules,
-    /// a lookup checks all three). A collision only makes a write wait longer.
-    struct PendingReads
-    {
-        // Granules by the size noted: big buffers (12 MiB ones read by every draw in another game)
-        // cost a few slots, not one per MiB.
-        static constexpr u64 SHIFTS[4] = {8, 14, 20, 23};
-        static constexpr u64 LIMITS[3] = {4_KB, 256_KB, 4_MB};
-        static constexpr u32 BITS = 16;
-        // Atomic: resolve workers note reads and look up writes while stage A notes them.
-        std::array<std::vector<std::atomic<u64>>, 4> tables{
-            std::vector<std::atomic<u64>>(1u << BITS), std::vector<std::atomic<u64>>(1u << BITS),
-            std::vector<std::atomic<u64>>(1u << BITS), std::vector<std::atomic<u64>>(1u << BITS)};
-        static u64 Slot(u64 granule, u32 level)
-        {
-            return ((granule * 4 + level) * 0x9E3779B97F4A7C15ull) >> (64 - BITS);
-        }
-        /// Ranges past Limits[2] (another game's vertex buffers span whole heaps, the same few every
-        /// draw): one entry each while they repeat; one pushed out goes into the tables first.
-        /// Written by stage A only.
-        struct Big
-        {
-            std::atomic<VAddr> begin{0}, end{0};
-            std::atomic<u64> packet{0};
-        };
-        std::array<Big, 16> big{};
-        u32 big_next = 0;
-        void Note(VAddr address, u64 size, u64 packet)
-        {
-            if (size > LIMITS[2])
-            {
-                for (Big& b : big)
-                {
-                    if (b.begin.load(std::memory_order_relaxed) == address &&
-                        b.end.load(std::memory_order_relaxed) == address + size)
-                    {
-                        b.packet.store(std::max(b.packet.load(std::memory_order_relaxed), packet),
-                                       std::memory_order_relaxed);
-                        return;
-                    }
-                }
-                Big& out = big[big_next++ % big.size()];
-                const VAddr old_end = out.end.load(std::memory_order_relaxed);
-                if (old_end != 0)
-                {
-                    const VAddr begin = out.begin.load(std::memory_order_relaxed);
-                    NoteTables(begin, old_end - begin, out.packet.load(std::memory_order_relaxed));
-                }
-                out.packet.store(packet, std::memory_order_relaxed);
-                out.begin.store(address, std::memory_order_relaxed);
-                out.end.store(address + size, std::memory_order_release);
-                return;
-            }
-            NoteTables(address, size, packet);
-        }
-        void NoteTables(VAddr address, u64 size, u64 packet)
-        {
-            const u32 level = size <= LIMITS[0] ? 0 : size <= LIMITS[1] ? 1 : size <= LIMITS[2] ? 2 : 3;
-            auto& table = tables[level];
-            for (u64 g = address >> SHIFTS[level]; g <= (address + size - 1) >> SHIFTS[level]; ++g)
-            {
-                auto& slot = table[Slot(g, level)];
-                u64 seen = slot.load(std::memory_order_relaxed);
-                while (seen < packet && slot.compare_exchange_weak(seen, packet, std::memory_order_relaxed) == false)
-                {
-                }
-            }
-        }
-        u64 Newest(VAddr address, u64 size) const
-        {
-            u64 newest = 0;
-            for (const Big& b : big)
-            {
-                if (b.begin.load(std::memory_order_relaxed) < address + size &&
-                    address < b.end.load(std::memory_order_acquire))
-                {
-                    newest = std::max(newest, b.packet.load(std::memory_order_relaxed));
-                }
-            }
-            for (u32 level = 0; level < 4; ++level)
-            {
-                for (u64 g = address >> SHIFTS[level]; g <= (address + size - 1) >> SHIFTS[level]; ++g)
-                {
-                    newest = std::max(newest, tables[level][Slot(g, level)].load(std::memory_order_relaxed));
-                }
-            }
-            return newest;
-        }
-    };
+    /// Stage A: the newest packets reading guest memory (render/pending_reads.h).
     PendingReads pending_reads;
     /// Stage A: packets whose constants a resolve worker copies, by the bytes they read (a
     /// constant RAM dump over them waits for the workers first: WaitForPendingReads).
@@ -803,6 +721,10 @@ private:
     VAddr copies_begin = ~VAddr{0}, copies_end = 0;
     void SyncProgramWrites(VAddr address, u64 size);
     u64 untracked_reads_packet = 0; ///< newest packet reading guest memory it does not list
+    u64 task_reads_packet = 0;      ///< newest task reading guest memory on the recording thread
+    /// The newest tick holding a submission's in-place image downloads (OnSubmit on the recording
+    /// thread; 0: none): a constant RAM dump after it waits for the GPU to have run them.
+    std::atomic<u64> submission_writes_tick{0};
     u64 constram_waits_skipped = 0; ///< statistics: CPU writes that did not have to wait
     u64 constram_gpu_waits = 0;     ///< statistics: dumps that waited for the GPU (WaitForInPlaceReads)
     u64 constram_gpu_wait_cycles = 0;

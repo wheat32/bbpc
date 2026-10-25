@@ -176,7 +176,7 @@ if (BBPC_BUILD_TESTS AND BBPC_BUILD_PORT)
 
     # The GPU library's tests: neither launches the game nor needs a Vulkan device.
     set(BBPC_GPU_TESTS motion-history-test ui-composition-test cp-decoder-test fx-init-clear-test
-        effect-flags-test dlss-generation-test settings-test upscaler-support-test scene-resolution-test
+        effect-flags-test dlss-generation-test pending-reads-test settings-test upscaler-support-test scene-resolution-test
         motion-shader-test taa-shader-test camera-motion-test translation-memory-test
         srt-walker-fault-test)
     foreach (test IN LISTS BBPC_GPU_TESTS)

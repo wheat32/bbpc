@@ -1428,6 +1428,10 @@ void Rasterizer::Finish()
 void Rasterizer::OnSubmit()
 {
     DrainDrawPipe();
+    // A constant RAM dump after this waits for the recording thread to have run it (the reads
+    // here are on this thread), and for the GPU only when it downloaded images into the game's
+    // memory, which the GPU writes when it runs the download (WaitForSubmissionWrites).
+    const u64 downloads = texture_cache.InPlaceDownloads();
     if (fault_process_pending)
     {
         fault_process_pending = false;
@@ -1436,6 +1440,10 @@ void Rasterizer::OnSubmit()
     texture_cache.ProcessDownloadImages();
     texture_cache.RunGarbageCollector();
     runtime.TickFrame();
+    if (texture_cache.InPlaceDownloads() != downloads)
+    {
+        submission_writes_tick.store(scheduler.CurrentTick(), std::memory_order_release);
+    }
 }
 
 void Rasterizer::MarkPass(const GraphicsPipeline* pipeline, const RenderState& state)

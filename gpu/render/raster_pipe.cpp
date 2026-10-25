@@ -168,6 +168,48 @@ bool ConstRamPipe()
     }();
     return enabled;
 }
+
+/// BB_CONSTRAM_WINDOWS=0: the reads around the dumps are looked up in the hashed tables only
+/// (PendingReads), where reads elsewhere sharing their slots made dumps wait for the GPU.
+bool ConstRamWindows()
+{
+    static const bool enabled = []
+    {
+        const char* env = std::getenv("BB_CONSTRAM_WINDOWS");
+        return env == nullptr || env[0] != '0';
+    }();
+    return enabled;
+}
+
+/// With the game's memory in place the draw reads these bytes when the GPU runs it, not when the
+/// recording thread binds them (a copy then, with the old model): a dump while it is still queued
+/// on the GPU gave it the next draw's data. Single frames showed another pass's quad: the finished
+/// picture in the top-left quarter, black around it, or the scene shifted by half the frame,
+/// bright around it (upstream docs/Flicker_video_2026-10-17.ru.md). Rare: ~1 of 1000 dumps.
+/// BB_CONSTRAM_GPU_WAIT=0: not waited.
+bool ConstRamGpuWait()
+{
+    static const bool enabled = []
+    {
+        const char* env = std::getenv("BB_CONSTRAM_GPU_WAIT");
+        return VideoCore::GuestInPlace() && (env != nullptr && env[0] == '0') == false;
+    }();
+    return enabled;
+}
+
+/// BB_CONSTRAM_TASK_GPU=1: a dump after a task reading guest memory (the end of a submission)
+/// waits for the GPU to have run the task as well, as before; the task reads on the recording
+/// thread, and what it hands the GPU that writes the game's memory has its own wait
+/// (WaitForSubmissionWrites).
+bool TaskReadsOnGpu()
+{
+    static const bool enabled = []
+    {
+        const char* env = std::getenv("BB_CONSTRAM_TASK_GPU");
+        return env != nullptr && env[0] == '1';
+    }();
+    return enabled;
+}
 } // namespace
 
 void Rasterizer::WaitForPendingReads(VAddr address, u64 size)
@@ -214,6 +256,11 @@ void Rasterizer::WaitForPendingReads(VAddr address, u64 size)
         const u64 submitted = semaphore->CurrentTick() - 1; // the last tick sent
         semaphore->Wait(submitted);
     }
+    if (size != 0 && ConstRamWindows())
+    {
+        pending_resolve.OpenWindow(address, size, draw_pipe->NextPacket());
+        pending_reads.OpenWindow(address, size, draw_pipe->NextPacket());
+    }
     // Stage 2: the resolve workers copy (or note as read in place) the constants of the packets
     // reading these bytes before the dump replaces them.
     if (size != 0 && draw_pipe->ResolverCount() != 0)
@@ -224,7 +271,10 @@ void Rasterizer::WaitForPendingReads(VAddr address, u64 size)
             draw_pipe->WaitResolved(resolving);
         }
     }
-    const u64 packet = size == 0 ? 0 : std::max(untracked_reads_packet, pending_reads.Newest(address, size));
+    // What the GPU may still read in place; the recording thread must also have run the tasks
+    // reading guest memory there.
+    const u64 reads = size == 0 ? 0 : std::max(untracked_reads_packet, pending_reads.Newest(address, size));
+    const u64 packet = size == 0 ? 0 : std::max(reads, task_reads_packet);
     if (ConstRamPipe() == false || UseDrawPipe() == false || size == 0)
     {
         DrainDrawPipe(DrawPipe::ReasonConstRam);
@@ -237,7 +287,8 @@ void Rasterizer::WaitForPendingReads(VAddr address, u64 size)
     {
         draw_pipe->WaitForPacket(packet, DrawPipe::ReasonConstRam);
     }
-    WaitForInPlaceReads(packet);
+    WaitForInPlaceReads(reads);
+    WaitForSubmissionWrites();
     if (InPlaceReads::Enabled() && size != 0)
     {
         Semaphore* semaphore = scheduler.GetWorkSemaphore();
@@ -281,18 +332,7 @@ void Rasterizer::WaitForPendingReads(VAddr address, u64 size)
 
 void Rasterizer::WaitForInPlaceReads(u64 packet)
 {
-    // With the game's memory in place the draw reads these bytes when the GPU runs it, not when
-    // the recording thread binds them (a copy then, with the old model): a dump while it is still
-    // queued on the GPU gave it the next draw's data. Single frames showed another pass's quad:
-    // the finished picture in the top-left quarter, black around it, or the scene shifted by half
-    // the frame, bright around it (upstream docs/Flicker_video_2026-10-17.ru.md). Rare: ~1 of 1000 dumps.
-    // BB_CONSTRAM_GPU_WAIT=0: not waited.
-    static const bool enabled = []
-    {
-        const char* env = std::getenv("BB_CONSTRAM_GPU_WAIT");
-        return VideoCore::GuestInPlace() && (env != nullptr && env[0] == '0') == false;
-    }();
-    if (enabled == false || packet == 0)
+    if (ConstRamGpuWait() == false || packet == 0)
     {
         return;
     }
@@ -301,7 +341,22 @@ void Rasterizer::WaitForInPlaceReads(u64 packet)
     {
         return; // older than the table: long run
     }
-    const u64 tick = entry.tick.load(std::memory_order_relaxed);
+    WaitForGpuTick(entry.tick.load(std::memory_order_relaxed));
+}
+
+void Rasterizer::WaitForSubmissionWrites()
+{
+    // Read after the recording thread ran the submission's end (WaitForPendingReads).
+    const u64 tick = submission_writes_tick.load(std::memory_order_acquire);
+    if (ConstRamGpuWait() == false || tick == 0)
+    {
+        return;
+    }
+    WaitForGpuTick(tick);
+}
+
+void Rasterizer::WaitForGpuTick(u64 tick)
+{
     Semaphore* semaphore = scheduler.GetWorkSemaphore();
     if (semaphore->IsFree(tick))
     {
@@ -945,9 +1000,13 @@ bool Rasterizer::RunInOrder(OrderedTask task, const void* data, u32 size, u64 to
         task(*this, static_cast<const u8*>(data));
         return false;
     }
-    if (reads_guest_memory)
+    if (reads_guest_memory && TaskReadsOnGpu())
     {
         untracked_reads_packet = draw_pipe->NextPacket();
+    }
+    else if (reads_guest_memory)
+    {
+        task_reads_packet = draw_pipe->NextPacket();
     }
     const u32 total = sizeof(TaskPacket) + AlignPacket(size);
     u8* out = draw_pipe->Begin(total);

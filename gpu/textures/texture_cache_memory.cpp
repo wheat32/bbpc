@@ -116,6 +116,7 @@ void TextureCache::DownloadImageMemory(ImageId image_id, bool sync)
         const auto [arena, offset] = buffer_cache.ObtainBuffer(info.guest_address, bytes, true);
         vk::BufferImageCopy copy = copy_to(offset);
         runtime.DownloadImage(&image, arena, std::span{&copy, 1});
+        in_place_downloads.fetch_add(1, std::memory_order_relaxed);
         if (buffer_cache.IsInPlace(info.guest_address, bytes))
         {
             return;

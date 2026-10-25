@@ -22,6 +22,7 @@
 #include "core/emulator_settings.h"
 #include "platform/kernel/event_queue.h"
 #include "platform/videoout/frame_stats.h"
+#include "platform/videoout/stall_samples.h"
 #include "render/vk_breadcrumbs.h"
 #include "memory/fault_sites.h"
 #include "vulkan/instance.h"
@@ -237,6 +238,7 @@ void OnFlipStats()
                     static_cast<unsigned long long>(pp - last_pp), static_cast<unsigned long long>(rc - last_rc),
                     static_cast<unsigned long long>(rp - last_rp));
     }
+    StallSamples::OnFlip(frame_ms);
     last_pc = pc;
     last_pp = pp;
     last_rc = rc;
