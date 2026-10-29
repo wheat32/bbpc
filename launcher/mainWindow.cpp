@@ -1,12 +1,16 @@
 #include "mainWindow.h"
 
 #include <QCloseEvent>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QStyle>
@@ -17,7 +21,9 @@
 #include "core/gameEnvironment.h"
 #include "core/hostEnvironment.h"
 #include "core/portPaths.h"
+#include "core/updateCheck.h"
 #include "debug.h"
+#include "dialogs/updateAvailableDialog.h"
 #include "pages/advancedPage.h"
 #include "pages/controlsPage.h"
 #include "pages/displayPage.h"
@@ -40,6 +46,8 @@ constexpr int BAR_MARGIN_H = 18;
 constexpr int BAR_MARGIN_V = 12;
 constexpr int PLAY_BUTTON_MIN_WIDTH = 150;
 constexpr int CONTENT_STRETCH = 1;
+constexpr int UPDATE_CHECK_DELAY_MS = 3000;
+constexpr int UPDATE_CHECK_TIMEOUT_MS = 10000;
 } // namespace
 
 MainWindow::MainWindow()
@@ -174,6 +182,40 @@ MainWindow::MainWindow()
     m_trophiesPage->setUserDir(m_gamePage->userDir());
     showPage(Page::Game);
     updateStatus();
+    QTimer::singleShot(UPDATE_CHECK_DELAY_MS, this, &MainWindow::checkForUpdates);
+}
+
+void MainWindow::checkForUpdates()
+{
+    if (AppConfig::instance().settings().checkForUpdates == false) return;
+    if (m_network == nullptr)
+    {
+        m_network = new QNetworkAccessManager(this);
+    }
+    DBG_APP(QStringLiteral("Checking for updates..."));
+    QNetworkRequest request{ QUrl(UpdateCheck::VERSION_URL) };
+    request.setTransferTimeout(UPDATE_CHECK_TIMEOUT_MS);
+    QNetworkReply* reply = m_network->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]()
+    {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+        {
+            DBG_APP(QStringLiteral("Update check failed: ") + reply->errorString());
+            return;
+        }
+        const QString remoteVersion = UpdateCheck::remoteVersion(reply->readAll());
+        const QString localVersion = QCoreApplication::applicationVersion();
+        if (UpdateCheck::isNewer(remoteVersion, localVersion) == false)
+        {
+            DBG_APP(QStringLiteral("Up to date (v%1; GitHub: v%2)").arg(localVersion, remoteVersion));
+            return;
+        }
+        DBG_APP(QStringLiteral("Update available: v%1 -> v%2").arg(localVersion, remoteVersion));
+        UpdateAvailableDialog* dialog = new UpdateAvailableDialog(localVersion, remoteVersion, this);
+        dialog->setModal(true);
+        dialog->show();
+    });
 }
 
 void MainWindow::addPage(Page page, const QString& title, QWidget* widget)

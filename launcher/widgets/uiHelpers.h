@@ -5,9 +5,11 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QLabel>
+#include <QProcess>
 #include <QString>
 #include <QUrl>
 
+#include "core/hostEnvironment.h"
 #include "icons.h"
 
 namespace UiHelpers
@@ -19,6 +21,19 @@ namespace UiHelpers
     {
         if (QDir().mkpath(path) == false) return;
         QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+    }
+
+    // Opens url in the browser with xdg-open in the host's environment (HostEnvironment), so the
+    // browser never loads the AppImage's libraries: QDesktopServices goes through the desktop
+    // portal, which on some Wayland desktops reports success and opens nothing. False when
+    // xdg-open could not be started.
+    inline bool openInBrowser(const QString& url)
+    {
+        QProcess process;
+        process.setProgram(QStringLiteral("xdg-open"));
+        process.setArguments({ url });
+        process.setProcessEnvironment(HostEnvironment::host());
+        return process.startDetached();
     }
 
     // A folder chooser that starts in current when it exists; an empty string when canceled.

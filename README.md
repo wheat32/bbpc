@@ -179,12 +179,14 @@ settings, starts and stops the game in its own process group, and shows its outp
 | **Trophies** | The trophies earned so far, with their icons once the trophy key is entered |
 | **Mods and patches** | Mod folders with their load order, third-party XML patches |
 | **Online** | Online play, the pool, servers, account or Discord sign-in, a connection test |
-| **Advanced** | Performance options, developer diagnostics, extra variables, theme |
+| **Advanced** | Performance options, developer diagnostics, extra variables, theme, the update check |
 | **Log** | The game's output, with copy and export |
 
 The launcher keeps its own settings in `~/.config/bbpc/launcher.json` (readable by you only: it
 holds the online password and token). On its first start it imports the original GTK launcher's
-`~/.config/bbport-launcher/settings.json`, which uses the same keys.
+`~/.config/bbport-launcher/settings.json`, which uses the same keys. A few seconds after it starts,
+it looks for a newer bbpc release (the `version.json` of the `main` branch) and, when there is one,
+offers its download page; *Check for updates at start* on the Advanced page turns that off.
 
 Command line: `bbpc --play` starts the game with the saved settings, `bbpc --build-fsr411
 <amd_fidelityfx_upscaler_dx12.dll> [loader DLL]` builds the FSR 4.1.1 assets without a window, and

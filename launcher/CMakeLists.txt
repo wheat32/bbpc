@@ -16,7 +16,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Svg)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Svg Network)
 
 # The launcher's logic without widgets: settings, bbport.ini, the game's environment, the port's
 # queries. The tests link it too.
@@ -52,6 +52,8 @@ add_library(bbpc_launcher_core STATIC
     core/profiles.cpp
     core/trophies.h
     core/trophies.cpp
+    core/updateCheck.h
+    core/updateCheck.cpp
     core/upscalerAssets.h
     core/upscalerAssets.cpp
     process/groupProcess.h
@@ -73,6 +75,8 @@ add_executable(bbpc
     themeManager.cpp
     dialogs/aboutDialog.h
     dialogs/aboutDialog.cpp
+    dialogs/updateAvailableDialog.h
+    dialogs/updateAvailableDialog.cpp
     pages/launcherPage.h
     pages/advancedPage.h
     pages/advancedPage.cpp
@@ -106,7 +110,7 @@ add_executable(bbpc
     widgets/uiHelpers.h
     resources.qrc
 )
-target_link_libraries(bbpc PRIVATE bbpc_launcher_core Qt6::Gui Qt6::Widgets Qt6::Svg)
+target_link_libraries(bbpc PRIVATE bbpc_launcher_core Qt6::Gui Qt6::Widgets Qt6::Svg Qt6::Network)
 target_compile_options(bbpc PRIVATE -Wall -Wextra)
 
 # Unit tests (tests/): with the root project's BBPC_BUILD_TESTS, or a Debug build of this one.

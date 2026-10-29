@@ -78,6 +78,7 @@ with patchelf: `bb-probe` is not position independent.
 | `launcher/core/portIni.h/cpp` | `bbport.ini`: edits in place, `saveChanges()` writes only the launcher's own changes |
 | `launcher/core/gameEnvironment.h/cpp` | Settings → the `BB_*` environment for `run.sh` |
 | `launcher/core/portPaths.h/cpp` | Where the port, its binaries and its data folder are (source tree or installed `share/bbpc`) |
+| `launcher/core/updateCheck.h/cpp` | The update check: `main`'s `version.json` against the launcher's own version (`MainWindow::checkForUpdates`, `UpdateAvailableDialog`) |
 | `launcher/core/choices.h/cpp` | The values the drop-downs offer, the game's effects and the control bindings |
 | `launcher/process/portQueries.h/cpp` | `launcher_query.py` and `bb-gpu-capabilities` queries |
 | `launcher/themeManager.h/cpp` | Dark and light palettes + `style_dark.qss` / `style_light.qss` |

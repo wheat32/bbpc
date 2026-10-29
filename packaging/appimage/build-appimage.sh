@@ -195,6 +195,19 @@ for platforms in /usr/lib/qt6/plugins/platforms /usr/lib/x86_64-linux-gnu/qt6/pl
     fi
 done
 
+# Qt's TLS plugin (OpenSSL) for HTTPS: the launcher's update check reads version.json from GitHub.
+for tls in /usr/lib/qt6/plugins/tls /usr/lib/x86_64-linux-gnu/qt6/plugins/tls /usr/lib64/qt6/plugins/tls; do
+    if [[ -f "${tls}/libqopensslbackend.so" ]]; then
+        mkdir -p "${APPDIR}/usr/plugins/tls"
+        cp "${tls}/libqopensslbackend.so" "${APPDIR}/usr/plugins/tls/"
+        NO_STRIP=1 "${LINUXDEPLOY}" --appdir "${APPDIR}" --deploy-deps-only "${APPDIR}/usr/plugins/tls"
+        info "Bundled Qt's TLS plugin (${tls})"
+        break
+    fi
+done
+[[ -f "${APPDIR}/usr/plugins/tls/libqopensslbackend.so" ]] ||
+    die "Qt's TLS plugin (tls/libqopensslbackend.so, Arch: qt6-base) was not found: the update check needs HTTPS"
+
 # The host's Vulkan loader and drivers serve the game, as for any native game.
 rm -f "${APPDIR}"/usr/lib/libvulkan.so*
 

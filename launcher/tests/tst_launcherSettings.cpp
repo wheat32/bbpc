@@ -42,6 +42,15 @@ private slots:
         QCOMPARE(settings.fpsLimit, LauncherSettings::NO_FPS_LIMIT);
     }
 
+    void checkForUpdates_onByDefault_andKeptWhenTurnedOff()
+    {
+        QVERIFY(LauncherSettings::fromJson({}).checkForUpdates);
+        LauncherSettings settings = LauncherSettings::fromJson({ { QStringLiteral("check_for_updates"), false } });
+        QVERIFY(settings.checkForUpdates == false);
+        settings.checkForUpdates = true;
+        QCOMPARE(settings.toJson().value(QStringLiteral("check_for_updates")).toBool(), true);
+    }
+
     void toJson_unknownKeys_areKept()
     {
         LauncherSettings settings = LauncherSettings::fromJson({ { QStringLiteral("ui_language"), QStringLiteral("ru") } });

@@ -64,6 +64,11 @@ AdvancedPage::AdvancedPage(const LauncherSettings& settings, const PortIni&, QWi
         emit changed();
     });
     launcher->addRow(m_themeRow);
+    m_updatesRow = new SwitchRow(tr("Check for updates at start"),
+                                 tr("Looks for a newer bbpc release on GitHub each time the launcher starts"),
+                                 settings.checkForUpdates);
+    connect(m_updatesRow, &SwitchRow::toggled, this, &AdvancedPage::changed);
+    launcher->addRow(m_updatesRow);
     SettingRow* dataRow = new SettingRow(tr("Data folder"), PortPaths::dataDir());
     QToolButton* openData = Icons::button(Icons::Kind::FileManager, tr("Open in the file manager"), dataRow);
     dataRow->addSuffix(openData);
@@ -103,4 +108,5 @@ void AdvancedPage::store(LauncherSettings& settings, PortIni&) const
     settings.vkValidation = m_validationRow->isOn();
     settings.extraEnv = m_extraRow->text().trimmed();
     settings.theme = m_themeRow->value();
+    settings.checkForUpdates = m_updatesRow->isOn();
 }

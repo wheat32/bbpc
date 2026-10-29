@@ -54,7 +54,7 @@ AboutDialog::AboutDialog(QWidget* parent) : QDialog(parent)
     versionGrid->setVerticalSpacing(VERSION_GRID_V_SPACING);
     versionGrid->setColumnStretch(VERSION_VALUE_COLUMN, VERSION_COL_STRETCH);
 
-    // The upstream port's version (its VERSION file), when the port has one.
+    // The bbport release bbpc is based on (version.json's upstream_version).
     const QString portVersion = PortPaths::portVersion();
     const QList<QPair<QString, QString>> rows = {
         { tr("App version:"), QCoreApplication::applicationVersion() },

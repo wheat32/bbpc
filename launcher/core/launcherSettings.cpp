@@ -7,6 +7,7 @@ template <typename Visitor>
 void visitFields(LauncherSettings& s, Visitor&& visit)
 {
     visit(QStringLiteral("theme"), s.theme);
+    visit(QStringLiteral("check_for_updates"), s.checkForUpdates);
     visit(QStringLiteral("game_dir"), s.gameDir);
     visit(QStringLiteral("user_dir"), s.userDir);
     visit(QStringLiteral("language"), s.language);

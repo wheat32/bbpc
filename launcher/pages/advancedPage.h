@@ -30,4 +30,5 @@ private:
     SwitchRow* m_validationRow = nullptr;
     EntryRow* m_extraRow = nullptr;
     ChoiceRow* m_themeRow = nullptr;
+    SwitchRow* m_updatesRow = nullptr;
 };

@@ -17,6 +17,7 @@ class OnlinePage;
 class TrophiesPage;
 class QLabel;
 class QListWidget;
+class QNetworkAccessManager;
 class QPushButton;
 class QStackedWidget;
 class QTimer;
@@ -57,8 +58,11 @@ private:
     void gameFinished(int exitCode);
     void updateStatus();
     void showToast(const QString& message);
+    // A newer bbpc on GitHub (UpdateCheck): the update dialog. Once, a few seconds after the start.
+    void checkForUpdates();
 
     PortIni m_ini;
+    QNetworkAccessManager* m_network = nullptr;
     bool m_hasGame = false;
     bool m_building = false;
     GroupProcess* m_game = nullptr;

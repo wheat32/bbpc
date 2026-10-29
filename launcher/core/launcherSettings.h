@@ -15,6 +15,8 @@ struct LauncherSettings
 
     // Launcher
     QString theme = QStringLiteral("system");
+    // A look for a newer bbpc release at start (UpdateCheck).
+    bool checkForUpdates = true;
 
     // Game
     QString gameDir;
