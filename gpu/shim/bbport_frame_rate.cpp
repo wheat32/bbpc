@@ -42,6 +42,7 @@ std::atomic<bool> unlocked{false};
 u64 image_base = 0;
 
 constexpr float FRAME30 = 1.0f / 30.0f;
+constexpr float FRAME60 = 1.0f / 60.0f;
 /// The highest frame rate the pacer allows ("uncap", and the most BB_FPS_LIMIT can ask for). The
 /// game itself breaks above it: on loading screens at 880-1000 FPS its main loop outran its worker
 /// threads and a pool allocator popped a freed node (guest fault at +0x263b8e7, 2 of 2 loads);
@@ -62,6 +63,7 @@ struct alignas(64) Live
     float step_up = 0.1f;                            ///< +0.1 per 30 FPS frame
     float decay08 = 0.8f;                            ///< 0.8 per 30 FPS frame
     float cloth = 1.0f;                              ///< cloth constraints' stiffness
+    float step60 = FRAME60;                          ///< a 1/60 s step per 30 FPS frame
 };
 Live* live = nullptr;
 int base_rate = 0; /// the launched mode's rate (with BB_FPS_LIMIT)
@@ -99,6 +101,7 @@ void PS4_SYSV_ABI FrameStep(u64 pacer)
     live->step_down = -0.1f * frames;
     live->step_up = 0.1f * frames;
     live->decay08 = std::pow(0.8f, frames);
+    live->step60 = FRAME60 * frames;
     // Cloth is stiffer the more often it is solved: the game's 1.0 at 30 FPS, 0.5 from 60 FPS up
     // (the value the community's 60 FPS patches settled on). It is the upper bound the cloth
     // setups clamp their Stiffness, Rigid Factor and Allowed Compression to when they load.
@@ -140,8 +143,13 @@ constexpr Redirect REDIRECTS[] = {
     {0x1f77d4a, 0x4929170, LIVE(dt)}, // an update by one frame (0 after a reset)
     {0x227784b, 0x4929b80, LIVE(dt)}, // timers advanced by one frame (0xebbda0)
     {0x2277892, 0x4929b80, LIVE(dt)},
-    {0x2313dad, 0x4929e70, LIVE(dt)}, // a simulation step: 1/60 in the game's 60 Hz mode,
-    {0x2313db7, 0x4929e74, LIVE(dt)}, // 1/30 otherwise
+    // The graphics parameters' blend (0x2313870, each parameter set several times a frame): its
+    // step, 1/60 s in the mode the game plays in ([0x55406c8] + 0x100 = 1), 1/30 s otherwise. It
+    // advances the sets' fades and the vegetation's wind time (with a fixed step the grass swayed
+    // four times as fast at 120 FPS).
+    {0x2313d8d, 0x4929e70, LIVE(step60)},
+    {0x2313dad, 0x4929e70, LIVE(step60)},
+    {0x2313db7, 0x4929e74, LIVE(dt)},
     {0x2315d71, 0x4929e74, LIVE(dt)},
     // Body parts the physics moves (0x1515ec0, each part every frame): their timers advanced by the
     // step they are given (0x180df90 at +0xf0, 0x1811650 at +0xd0), 1/30 s; not in the patches.
