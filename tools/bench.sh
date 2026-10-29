@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright 2026 bbport contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
 # tools/bench.sh NAME [key=value...]: a repeatable in-game benchmark. Copies a save and its
 # settings into out/bench/NAME_<time>/data (the player's own files are never written), applies the
 # key=value lines to that copy of bbport.ini, starts the game, chooses Continue on the title,

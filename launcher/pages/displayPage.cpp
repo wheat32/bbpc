@@ -28,35 +28,32 @@ DisplayPage::DisplayPage(const LauncherSettings& settings, const PortIni& ini, Q
     m_outputRow = new ChoiceRow(tr("Output resolution"),
                                 tr("The size of the final image, menus included. The game renders at it natively with "
                                    "Native AA, TAA or the upscaler off; the other presets render the scene smaller and "
-                                   "upscale it to this size. Steam Deck: 1280×800 (16:10)"));
+                                   "upscale it to this size. Auto: the monitor's own resolution. The output, the aspect "
+                                   "ratio and the preset also change live in the game. Steam Deck: 1280×800 (16:10)"));
     screen->addRow(m_outputRow);
-    // "auto" of older settings is off, as unset.
-    const QString live = ini.value(QStringLiteral("live_resolution")) == QStringLiteral("1") ? QStringLiteral("1")
-                                                                                              : QStringLiteral("0");
-    m_liveRow = new ChoiceRow(tr("Live resolution changes"),
-                              tr("Change the resolution and preset in game without a restart, but about 10% slower"),
-                              Choices::liveResolution(), live);
-    connect(m_liveRow, &ChoiceRow::valueChanged, this, &DisplayPage::changed);
-    screen->addRow(m_liveRow);
 
-    m_fullscreenRow = new SwitchRow(tr("Fullscreen"), {}, settings.fullscreen);
+    m_fullscreenRow = new SwitchRow(tr("Fullscreen"), tr("A borderless window over the whole monitor"), settings.fullscreen);
     connect(m_fullscreenRow, &SwitchRow::toggled, this, &DisplayPage::changed);
     screen->addRow(m_fullscreenRow);
 
     // The game's window opens on this monitor (fullscreen too), not on the one SDL calls primary.
     m_displayRow = new ChoiceRow(tr("Monitor"), {});
+    m_displayRow->setToolTip(tr("The monitor the window and fullscreen open on"));
     QToolButton* refreshDisplays = Icons::button(Icons::Kind::Refresh, tr("Refresh the list"), m_displayRow);
     m_displayRow->addSuffix(refreshDisplays);
     connect(refreshDisplays, &QToolButton::clicked, this, &DisplayPage::fillDisplays);
     screen->addRow(m_displayRow);
 
-    m_presentRow = new ChoiceRow(tr("Present mode"), {}, Choices::presentModes(), settings.presentMode);
+    m_presentRow = new ChoiceRow(tr("Present mode"),
+                                 tr("Mailbox: no tearing, low latency; FIFO: vertical sync; Immediate: no sync (tearing, "
+                                    "the lowest latency)"),
+                                 Choices::presentModes(), settings.presentMode);
     connect(m_presentRow, &ChoiceRow::valueChanged, this, &DisplayPage::changed);
     screen->addRow(m_presentRow);
-    m_hdrRow = new SwitchRow(tr("Allow HDR"), {}, settings.hdr);
+    m_hdrRow = new SwitchRow(tr("Allow HDR"), tr("HDR output where the monitor and the system support it"), settings.hdr);
     connect(m_hdrRow, &SwitchRow::toggled, this, &DisplayPage::changed);
     screen->addRow(m_hdrRow);
-    m_showFpsRow = new SwitchRow(tr("Show FPS"), tr("The frame rate, over the game"),
+    m_showFpsRow = new SwitchRow(tr("Show FPS"), tr("A frame counter in the corner of the screen"),
                                  ini.value(QStringLiteral("show_fps")) == QStringLiteral("1"));
     connect(m_showFpsRow, &SwitchRow::toggled, this, &DisplayPage::changed);
     screen->addRow(m_showFpsRow);
@@ -66,24 +63,26 @@ DisplayPage::DisplayPage(const LauncherSettings& settings, const PortIni& ini, Q
     const QString aspect = ini.value(QStringLiteral("aspect_ratio"), OutputSizes::AUTO);
     m_displayRow->combo()->setItems({ { tr("Primary"), QString(), {} } });
     fillAspects(OutputSizes::aspects().contains(aspect) ? aspect : OutputSizes::AUTO);
-    fillOutputs(OutputSizes::parse(ini.value(QStringLiteral("output_res"))).value_or(OutputSizes::DEFAULT_SIZE));
+    const QString output = ini.value(QStringLiteral("output_res"));
+    fillOutputs(OutputSizes::parse(output).value_or(OutputSizes::DEFAULT_SIZE), output.trimmed() == OutputSizes::AUTO);
 
     connect(m_aspectRow, &ChoiceRow::valueChanged, this, [this]()
     {
-        fillOutputs(OutputSizes::parse(outputResolution()).value_or(OutputSizes::DEFAULT_SIZE));
+        fillOutputs(OutputSizes::parse(outputResolution()).value_or(OutputSizes::DEFAULT_SIZE), outputIsAuto());
         emit changed();
     });
-    connect(m_outputRow, &ChoiceRow::valueChanged, this, [this](const QString& output)
+    connect(m_outputRow, &ChoiceRow::valueChanged, this, [this]()
     {
-        emit outputResolutionChanged(output);
+        emit outputResolutionChanged(outputResolution());
         emit changed();
     });
     connect(m_displayRow, &ChoiceRow::valueChanged, this, [this](const QString& value)
     {
         m_savedDisplay = value;
-        const QSize output = OutputSizes::parse(outputResolution()).value_or(OutputSizes::DEFAULT_SIZE);
+        const QSize kept = OutputSizes::parse(outputResolution()).value_or(OutputSizes::DEFAULT_SIZE);
+        const bool automatic = outputIsAuto();
         fillAspects(m_aspectRow->value());
-        fillOutputs(output);
+        fillOutputs(kept, automatic);
         emit changed();
     });
     fillDisplays();
@@ -91,7 +90,12 @@ DisplayPage::DisplayPage(const LauncherSettings& settings, const PortIni& ini, Q
 
 QString DisplayPage::outputResolution() const
 {
-    return m_outputRow->value();
+    return OutputSizes::format(OutputSizes::effective(m_outputRow->value(), monitorSize()));
+}
+
+bool DisplayPage::outputIsAuto() const
+{
+    return m_outputRow->value() == OutputSizes::AUTO;
 }
 
 void DisplayPage::store(LauncherSettings& settings, PortIni& ini) const
@@ -102,7 +106,6 @@ void DisplayPage::store(LauncherSettings& settings, PortIni& ini) const
     settings.hdr = m_hdrRow->isOn();
     ini.setValue(QStringLiteral("aspect_ratio"), m_aspectRow->value());
     ini.setValue(QStringLiteral("output_res"), m_outputRow->value());
-    ini.setValue(QStringLiteral("live_resolution"), m_liveRow->value());
     ini.setValue(QStringLiteral("show_fps"), m_showFpsRow->isOn() ? QStringLiteral("1") : QStringLiteral("0"));
 }
 
@@ -134,11 +137,16 @@ void DisplayPage::fillAspects(const QString& current)
     m_aspectRow->combo()->setValue(current);
 }
 
-void DisplayPage::fillOutputs(const QSize& keep)
+void DisplayPage::fillOutputs(const QSize& keep, bool automatic)
 {
-    const QList<QSize> sizes = OutputSizes::sizes(m_aspectRow->value(), monitorSize());
+    const std::optional<QSize> monitor = monitorSize();
+    const QList<QSize> sizes = OutputSizes::sizes(m_aspectRow->value(), monitor);
     const QSize chosen = OutputSizes::nearest(sizes, keep);
-    QList<ChoiceCombo::Item> items;
+    // Auto (output_res=auto): the monitor's own resolution, as run.sh finds it.
+    const QString autoLabel = monitor.has_value()
+        ? tr("Auto (monitor) %1×%2").arg(monitor->width()).arg(monitor->height())
+        : tr("Auto (monitor)");
+    QList<ChoiceCombo::Item> items = { { autoLabel, OutputSizes::AUTO, {} } };
     for (const QSize& size : sizes)
     {
         QString label = QStringLiteral("%1×%2").arg(size.width()).arg(size.height());
@@ -151,7 +159,7 @@ void DisplayPage::fillOutputs(const QSize& keep)
     {
         const QSignalBlocker blocker(m_outputRow->combo());
         m_outputRow->combo()->setItems(items);
-        m_outputRow->combo()->setValue(OutputSizes::format(chosen));
+        m_outputRow->combo()->setValue(automatic ? OutputSizes::AUTO : OutputSizes::format(chosen));
     }
     emit outputResolutionChanged(outputResolution());
 }
@@ -189,6 +197,7 @@ void DisplayPage::fillDisplays()
             items.append({ tr("%1 (not connected)").arg(saved), saved, {} });
         }
         const QSize keep = OutputSizes::parse(outputResolution()).value_or(OutputSizes::DEFAULT_SIZE);
+        const bool automatic = outputIsAuto();
         {
             const QSignalBlocker blocker(m_displayRow->combo());
             m_displayRow->combo()->setItems(items);
@@ -197,6 +206,6 @@ void DisplayPage::fillDisplays()
         m_savedDisplay = saved;
         // Auto's aspect ratio and its resolutions follow the monitor.
         fillAspects(m_aspectRow->value());
-        fillOutputs(keep);
+        fillOutputs(keep, automatic);
     }, DISPLAY_QUERY_TIMEOUT_MS);
 }

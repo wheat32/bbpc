@@ -109,7 +109,9 @@ the two wait for each other comes first (`BB_TIMELINE`).
    on for strong GPUs (a GPU check in `run.sh`). It keeps the game at 1920x1080 internally and
    copies scene targets back, which cost ~11% and caused 90 ms hitches here. "Auto" is gone from the
    launcher and the in-game menu, and the `auto` of older settings now means off; live changes
-   (presets without a restart) stay an option.
+   (presets without a restart) stay an option. Superseded by the original project's 0.7 (merged
+   2026-10-29): live changes now run over the startup patch (`BB_LIVE_HYBRID`), the game's targets
+   at the launch preset's size, so they cost nothing and are always on; the setting is gone.
 2. **The every-third-frame pattern.** Explained (2026-10-24): not a stall but the GPU limit seen
    from the CPU side (see above). Nothing to fix by itself; phase 2 is what moves it.
 3. **DLSS in every build.** Done for the packages (0.7.2): `tools/fetch_dlss_sdk.sh` fetches the
@@ -155,7 +157,10 @@ the two wait for each other comes first (`BB_TIMELINE`).
    `BB_COPY_DESTINATIONS=0` turns the new destinations off. GPU time 8.35 to 7.50 ms per frame;
    +11% average FPS, 1% low 75 to 84 FPS; screenshots of the level and the pause menu unchanged.
    `BB_TILE_BACK_LOG=1` now names the shader reading an image as a buffer, and
-   `BB_WATCH_READS=<address,...>` prints every shader binding chosen addresses.
+   `BB_WATCH_READS=<address,...>` prints every shader binding chosen addresses. The original
+   project's 0.7 made the same destination images itself (merged 2026-10-29: its version replaced
+   bbpc's `MakeCopyDestination` and `BB_COPY_DESTINATIONS`; `BbToggle::ComputeCopyNewImage` turns it
+   off), with a depth source's stencil plane taken as a buffer.
 2. **Close the GPU's idle gaps.** Measured (2026-10-24), little left: after 2.1 the GPU is idle
    ~0.3 ms per frame (most of it after the frame's first submission), and recorded work already
    goes out at once when the GPU runs dry (`SubmitForSignalsNow`, `BB_HONEST_*`). Shorter batch
@@ -286,6 +291,13 @@ the two wait for each other comes first (`BB_TIMELINE`).
      against 12.8-13.1 ms, and 19-44 frames over 12 ms against 252-380; dumps waiting for the GPU
      none against 9-30 a second; screenshots of the spot unchanged. Both parts together, against
      the start: 120.4 against 107.7 FPS average (+12%), 1% low 92 against 83 FPS.
+   - Replaced (merged 2026-10-29) by the original project's 0.7, which solved the same waits its own
+     way: a dump waits for the recording thread only over ordered tasks that read guest memory
+     (`untracked_cpu_reads_packet`), for the GPU only over what stage B bound in place (a second
+     table, `gpu_reads`), and the hashed tables keep a summary per 2 MiB so a lookup skips what
+     nothing newer touched (`BB_PENDING_SUMMARY=0`). `gpu/render/pending_reads.h`,
+     `BB_CONSTRAM_WINDOWS`, `task_reads_packet`, `WaitForSubmissionWrites` and
+     `BB_CONSTRAM_TASK_GPU` are gone. The measurements above are bbpc's before that merge.
    - Still open: none of these waits covers stages that read memory through pointers when the
      GPU runs them (`uses_dma`; `BB_EXP_DMA_UNTRACKED=1` is the experiment that would). None ran
      at this spot.
@@ -337,13 +349,13 @@ and replays, methods inlined into the engine, packets written outside the method
 
 | Step | Kind | Expected effect |
 |---|---|---|
-| 1.1 Live resolution off by default (done) | setting | +11% FPS, no 90 ms hitches |
+| 1.1 Live resolution off by default (done; superseded in 0.7: live changes over the startup patch) | setting | +11% FPS, no 90 ms hitches |
 | 1.3 DLSS in every build (done in 0.7.2), fallback shown | build | DLSS where the player chose it |
 | 1.5 The ~70 ms frames (explained): malloc trim threshold (done) | heap | no `brk` or its page faults while playing; fewer stalls when something reads the memory map |
-| 2.1 Render-target copies (done) | GPU, no emulation | -0.85 ms GPU per frame, 120 to 134 FPS |
+| 2.1 Render-target copies (done; the original project's version since 0.7) | GPU, no emulation | -0.85 ms GPU per frame, 120 to 134 FPS |
 | 2.2 Idle gaps between submissions (measured) | GPU | none measurable: ~0.3 ms idle left |
 | 2.3 Translated shader costs (shadow maps, `fefebf9f`, NVIDIA workarounds measured) | GPU | none so far: shadow maps unchanged, `fefebf9f` at most +2.5%, NVIDIA workarounds ~0.1 ms each (kept for accuracy) |
 | 2.3 Passes without targets (depth decompressions, measured) | GPU | none: skipping them changed nothing |
-| 2.5 Where the GPU waits for work (`BB_TIMELINE`): exact dump checks, task reads waited for on stage B (done) | stage A, no emulation change | +12% FPS and 1% low 83 to 92 FPS at a busy spot; GPU idle 2.56 to 0.30 ms per frame |
+| 2.5 Where the GPU waits for work (`BB_TIMELINE`): exact dump checks, task reads waited for on stage B (done; the original project's design since 0.7) | stage A, no emulation change | +12% FPS and 1% low 83 to 92 FPS at a busy spot; GPU idle 2.56 to 0.30 ms per frame |
 | 3.x Graphics API translation | CPU, no emulation | most of stage A |
 | 4.x Install-time conversion | no emulation | load times, stutter, less code |

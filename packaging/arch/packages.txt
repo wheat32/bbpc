@@ -44,6 +44,8 @@ qt6-wayland
 
 # Optional tools. spirv-cross: faster FSR 4 post passes (tools/fsr4_optimize.sh; without it the
 # original passes run). mingw-w64-gcc: FSR 4.1.1 from your own AMD DLL (tools/fsr4cap builds
-# fsr4cap.exe with it) and the AppImage
+# fsr4cap.exe with it) and the AppImage. 7zip: FSR 4.1.2's models from an AMD Adrenalin installer
+# (tools/fsr4cap/build_assets.sh unpacks its amdxcffx64.dll)
 spirv-cross
 mingw-w64-gcc
+7zip

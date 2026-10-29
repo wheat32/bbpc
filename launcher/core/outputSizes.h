@@ -9,7 +9,9 @@
 // OutputSizes - output aspect ratios and their resolutions, the same lists as the in-game menu's
 // (gpu/shim/bbport_settings.cpp). The game keeps its 1920x1080 frame; for another aspect ratio its
 // camera sees more to the sides (or above and below) and the UI keeps to the screen's edges.
-// "auto" is the group nearest the monitor's aspect ratio.
+// As an aspect ratio "auto" is the group nearest the monitor's; as the output resolution
+// (bbport.ini output_res=auto, the default) it is the monitor's own resolution (run.sh passes it
+// as BB_MONITOR_SIZE).
 namespace OutputSizes
 {
     inline const QString AUTO = QStringLiteral("auto");
@@ -31,4 +33,8 @@ namespace OutputSizes
     // "WxH" (bbport.ini's output_res) and back.
     std::optional<QSize> parse(const QString& text);
     QString format(const QSize& size);
+
+    // The size an output_res value comes to: auto is the monitor's (1920x1080 while it is not
+    // known), an unreadable value 1920x1080.
+    QSize effective(const QString& output, const std::optional<QSize>& monitor);
 }

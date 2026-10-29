@@ -7,7 +7,8 @@ and tested on Arch Linux.
 > ("bbport") by [deadinside28](https://github.com/deadinside28) and its contributors. The port
 > itself (the loader and PS4 runtime, the renderer and shader translator, the memory model, the
 > upscalers, online play and seamless co-op) is their work. This fork rebuilds the launcher, the
-> build system and the packaging around it. See [Credits and licenses](#credits-and-licenses).
+> build system and the packaging around it. It follows the original project's release **0.7**
+> (`upstream_version` in `version.json`). See [Credits and licenses](#credits-and-licenses).
 
 > **Disclaimer:** No game files are included: you need your own decrypted dump of Bloodborne with
 > update 1.09. This project is not affiliated with Sony Interactive Entertainment, FromSoftware,
@@ -38,6 +39,9 @@ and tested on Arch Linux.
   game, instead of a Nix closure with its own Mesa.
 - **GitHub Actions**: every pull request is built and tested in an Arch Linux container, and every
   push to `main` publishes a release with the AppImage and a native tarball.
+- **Linux only.** The original project's native Windows build (its WPF launcher and Windows
+  packages) is not part of this fork; the port's code keeps its Windows parts, so that the original
+  project's releases merge cleanly.
 - **English documentation only**, trimmed to what is still useful.
 
 ## How the port works
@@ -55,9 +59,10 @@ summary:
   and were rewritten). The PS4 command stream is decoded on one thread and recorded on another,
   GCN shaders are translated to SPIR-V, and memory writes, DMA and fences are executed by the GPU
   in stream order.
-- **Memory follows the PC model** by default: the game's memory stays in system RAM and the GPU
-  reads it in place, with frequently read data kept in VRAM and released when unused. The memory
-  model of version 0.3 (VRAM copies with write tracking) remains an option.
+- **Memory follows the PC model:** the game's memory stays in system RAM and the GPU reads it in
+  place, with frequently read data kept in VRAM and released when unused. Since 0.7 it is the only
+  model (the VRAM copies with write tracking of version 0.3 are gone), and the game's graphics
+  heaps grow on demand instead of being allocated whole.
 
 ### Highlights
 
@@ -67,12 +72,21 @@ summary:
 - **Temporal upscaling built for this game:** the port computes motion vectors itself (camera
   motion from depth, object motion from the previous frame's vertices) and jitters the scene.
   Supported: **FSR 3.1**, **FSR 4** (INT8, model v07), **FSR 4.1.1** recorded from your own AMD DLL
-  and replayed bit-exactly on Vulkan (INT8 everywhere, FP8 on RDNA4), **DLSS** with NVIDIA's SDK,
-  and a native **TAA**.
+  and replayed bit-exactly on Vulkan (INT8 everywhere, FP8 on RDNA4), FSR 4.1.2's models from AMD's
+  driver, **DLSS** with NVIDIA's SDK, **FSR 1** for weak GPUs, and a native **TAA**.
+- **Frame generation and low latency:** DLSS Frame Generation on GeForce RTX 40 and newer, FSR 3.1
+  frame generation on any GPU (experimental), NVIDIA Reflex and AMD Anti-Lag 2.
+- **Image quality:** an anti-aliasing choice (the game's, FXAA, SMAA 1x or off), sharpening without
+  an upscaler, GT-VBAO in place of the game's SSAO, and a texture quality setting for small GPUs.
 - **Keyboard and mouse** with mouse look, a Dark Souls III-like layout, rebinding in the launcher,
   and button prompts that match the gamepad in use.
-- **Settings inside the game's own menu** (*System → Display / Effects*), a **Quit Game** item at
-  the bottom of the title menu, and an **overlay menu** (Insert or L3+R3).
+- **Settings inside the game's own menu** (*System → Display / Effects*), **Exit to desktop** as
+  the last item of *System* and of the title screen's menu, and an **overlay menu** (Insert, or
+  hold L3+R3).
+- **Trophies** earned in the game, listed in the launcher and in `user/trophies.jsonl`
+  ([docs/trophies.md](docs/trophies.md)).
+- **Shaders before you play:** a shader recipe pack, when the package has one, is compiled in the
+  background at start ([docs/shader_recipes.md](docs/shader_recipes.md)).
 - **Online play and seamless co-op** on shadPS4 0.20's network stack: the **Seamless Hunt** pool
   (bells, summons, messages, bloodstains and BBSC seamless co-op for up to five hunters) or **The
   Hunter's Dream** (Discord sign-in).
@@ -158,10 +172,11 @@ settings, starts and stops the game in its own process group, and shows its outp
 
 | Page | What it sets |
 |---|---|
-| **Game** | Game folder (checked for the 1.09 executable), saves folder, the game's text language, memory and translation model, GPU, frame rate mode and limit |
-| **Display** | Aspect ratio, output resolution, live resolution changes, fullscreen, monitor, present mode, HDR, the FPS counter |
-| **Graphics** | Upscaler, preset, sharpening, object motion vectors, FSR 4.1.1 from your own AMD DLL, NVIDIA's DLSS library, model detail and the game's effects |
-| **Controls** | The controller to use, keyboard, mouse and gamepad bindings, mouse look and sensitivity |
+| **Game** | Game folder (checked for the 1.09 executable), saves folder, the game's text and voice languages, GPU, frame rate mode and limit, low latency, a desktop shortcut |
+| **Display** | Aspect ratio, output resolution (*Auto*: the monitor's), fullscreen, monitor, present mode, HDR, the FPS counter |
+| **Graphics** | Upscaler, preset, sharpening, frame generation, anti-aliasing, texture quality, GT-VBAO, object motion vectors, FSR 4.1.1 and 4.1.2 from AMD's files, NVIDIA's DLSS libraries, model detail and the game's effects |
+| **Controls** | The controller to use, keyboard, mouse and gamepad bindings (up to four keys per action), mouse look, sensitivity and inverted axes, button prompts |
+| **Trophies** | The trophies earned so far, with their icons once the trophy key is entered |
 | **Mods and patches** | Mod folders with their load order, third-party XML patches |
 | **Online** | Online play, the pool, servers, account or Discord sign-in, a connection test |
 | **Advanced** | Performance options, developer diagnostics, extra variables, theme |
@@ -177,18 +192,17 @@ Command line: `bbpc --play` starts the game with the saved settings, `bbpc --bui
 
 ## Resolution and presets
 
-For outputs other than 1080p (720p on the Steam Deck, 1440p, 4K), the whole game renders at the
-preset's resolution through a patch applied at start: the fastest path, but changing the output or
-the preset in the in-game menu then needs *Apply and restart game*. **Live resolution changes**
-(off by default; launcher, in-game menu, or `live_resolution=0|1` in `bbport.ini`) keep the game
-at 1080p internally and scale its render targets at run time instead, so outputs and presets switch
-without a restart. That costs more (the game draws as for 1080p, and some targets are copied
-between sizes): about 10% of the frame rate on an RTX 4080, more on weaker GPUs. The `auto` of older
-settings means off. 1080p output and TAA always take the live path.
+The game starts at the size of the chosen preset and output (*Auto* output is the monitor's
+resolution) through a patch applied at start, so a frame costs what it costs at that size. Since
+0.7 the presets, the output resolution and the aspect ratio still change live in the in-game menu,
+smaller and larger presets alike: a preset other than the launch one is drawn through proxies until
+the next start (`BB_LIVE_HYBRID=0`: the game's targets stay at 1080p and every preset goes through
+proxies). The launcher no longer has a live resolution setting; `live_resolution` in an older
+`bbport.ini` changes nothing. GTX 10xx GPUs (no depth proxies) apply a new preset at the next start.
 
 ## Upscalers
 
-- **FSR 3.1** needs nothing extra.
+- **FSR 3.1** and **FSR 1** need nothing extra.
 - **FSR 4** needs the v07 asset set (MIT, built from AMD's FidelityFX source by Q2RTX):
   `bash tools/fetch_fsr4_assets.sh`. The AppImage includes it.
 - **FSR 4.1.1** is recorded from your own `amd_fidelityfx_upscaler_dx12.dll` version 4.1.x (for
@@ -200,13 +214,17 @@ settings means off. 1080p output and TAA always take the live path.
   found too); `umu-launcher` is used when installed. AMD's official FSR 4.0.x and community
   builds such as 4.0.2b do not fit. From source the recording also needs `mingw-w64-gcc`,
   `cmake`, `ninja`, `python`, `spirv-tools` and `git`; the AppImage brings its tools prebuilt.
+- **FSR 4.1.2** (Radeon): its models come from AMD's driver, `amdxcffx64.dll` from an Adrenalin
+  26.10.1 or newer installer (unpacked with `7z`), recorded like FSR 4.1.1 together with your 4.1.x
+  upscaler DLL: **Graphics → FSR 4.1.2 from AMD's driver**, or
+  `bash tools/fsr4cap/build_assets.sh <installer or amdxcffx64.dll> [upscaler DLL]`.
 - **DLSS** (NVIDIA RTX): the release AppImage and tarball carry the DLSS bridge and NVIDIA's
-  `libnvidia-ngx-dlss.so` (NVIDIA's RTX SDK license allows its runtime library in an application;
+  `libnvidia-ngx-dlss.so` and `libnvidia-ngx-dlssg.so` (Frame Generation, GeForce RTX 40 and newer;
+  [docs/DLSS_FRAME_GENERATION.md](docs/DLSS_FRAME_GENERATION.md)) (NVIDIA's RTX SDK license allows its runtime libraries in an application;
   its text is `NVIDIA-DLSS-LICENSE.txt` in the package). From source, `bash tools/fetch_dlss_sdk.sh`
   fetches the parts of [NVIDIA's SDK](https://github.com/NVIDIA/DLSS) the build needs into
   `dlss-sdk/`; `DLSS_SDK_ROOT=$PWD/dlss-sdk bash build.sh` then builds the bridge
-  `out/libbbport_dlss.so` and copies NVIDIA's `libnvidia-ngx-dlss.so.<version>` next to
-  `out/bb-probe`. A newer
+  `out/libbbport_dlss.so` and copies NVIDIA's libraries next to `out/bb-probe`. A newer
   `libnvidia-ngx-dlss.so` can be chosen in the launcher (**Graphics → DLSS: NVIDIA's library**).
   A game's `nvngx_dlss.dll` is the Windows library and does not load on Linux.
 - **TAA** is a native-resolution temporal anti-aliasing mode that switches live without an FSR
@@ -235,16 +253,17 @@ the Windows version of the port. Offline, the module is never loaded.
 ## Useful environment variables
 
 `run.sh` and the runtime read many `BB_*` variables; the launcher sets most of them from its
-settings, and **Advanced → Extra variables** adds your own. A selection:
+settings, and **Advanced → Extra variables** adds your own. Every one of them is listed with what it
+does in [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) (made from `gpu/shim/bb_env_vars.def`), and the
+log's `Environment:` line names any other `BB_*` it finds (a typo). A selection:
 
 | Variable | Effect |
 |---|---|
 | `BB_GAME_DIR` | The game folder (default `game/CUSA03173`, else `../CUSA03173`) |
 | `BB_BUILD_DIR` | The build folder `run.sh` plays from source (default `out`) |
 | `BB_FRAME_STATS=1` | Frame statistics in the log, with a `Memory:` line (VRAM, GTT, RSS) |
-| `BB_PC_MODEL=0` | The old memory model of 0.3 (the new one is the default) |
 | `BB_UPSCALER=taa\|fsr3\|fsr4\|fsr411\|off` | The upscaler, over `bbport.ini` |
-| `BB_LIVE_RES=1` | Live resolution changes instead of the start-up patch |
+| `BB_LIVE_RES=0` | No live preset changes over the start-up patch (tests) |
 | `BB_GPU_ID=N` | The GPU by its Vulkan index (the launcher picks it by name) |
 | `BB_GPU_PROFILE=1` | GPU time per pass in the log |
 | `BB_ANISO=N` | Anisotropic filtering of scene textures (16 by default, 0 for the game's own) |
@@ -252,7 +271,7 @@ settings, and **Advanced → Extra variables** adds your own. A selection:
 | `BB_ASYNC_PIPELINES=0` | Compile new pipelines at once instead of in the background |
 | `BB_READBACKS=0\|1\|2` | Reads of GPU-written memory by the game (1 by default, 2 precise and slow) |
 | `BB_LARGE_HEAPS=0\|1` | Force the larger graphics heaps for texture packs off or on |
-| `BB_TITLE_QUIT=0` | No Quit Game item in the title menu |
+| `BB_HEAP_GROW=0` | The game's graphics heaps allocated whole from the start |
 | `BB_SKIP_GAME_CHECK=1` | Skip the check of the game's executable |
 | `BB_PAD_RECORD=file` / `BB_PAD_REPLAY=file` | Record a route with F9, replay it in scripted tests |
 
@@ -304,7 +323,7 @@ tests.
 | `patches/` | Community patches for Bloodborne |
 | `tools/` | Developer tools: scripted runs, A/B toggles, benchmarks, FSR 4 shader rewrites, `fsr4cap` (FSR 4.1.1 recording) |
 | `tests/` | Runtime, GPU library and Python tests |
-| `docs/` | The [roadmap](docs/ROADMAP.md) (native speed, no emulation), [mods and patches](docs/MODS.md), [BBSC](docs/BBSC.md), design notes on [upscaling](docs/upscaler.md) and [parallel GPU processing](docs/parallel_gpu.md) |
+| `docs/` | The [roadmap](docs/ROADMAP.md) (native speed, no emulation), [mods and patches](docs/MODS.md), [BBSC](docs/BBSC.md), [every `BB_*` variable](docs/ENVIRONMENT.md), upstream's [0.7 release notes](docs/CHANGES_0.7.md) and [contributors](docs/CONTRIBUTORS_0.7.md), design notes on [upscaling](docs/upscaler.md), [DLSS Frame Generation](docs/DLSS_FRAME_GENERATION.md), [GT-VBAO](docs/vbao.md), [the memory model](docs/unified_memory.md), [shader recipes](docs/shader_recipes.md), [trophies](docs/trophies.md) and [parallel GPU processing](docs/parallel_gpu.md) |
 | `.github/workflows/` | CI (pull requests) and releases (pushes to `main`) |
 
 The original project's change logs, development logs and investigations are in
@@ -312,7 +331,8 @@ The original project's change logs, development logs and investigations are in
 
 ## Credits and licenses
 
-bbpc is licensed under the **GNU GPL v2 or later** ([LICENSE](LICENSE)), as the original project is.
+bbpc is licensed under the **GNU GPL v2 or later** ([LICENSE](LICENSE)), as the original project is;
+[NOTICE](NOTICE) is the original project's notice, which its code carries along.
 
 - **[bloodborne_pc](https://github.com/deadinside28/bloodborne_pc)** by deadinside28 and its
   contributors: the port this fork is built on, in its entirety.

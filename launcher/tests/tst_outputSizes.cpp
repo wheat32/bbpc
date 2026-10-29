@@ -39,6 +39,14 @@ private slots:
         QCOMPARE(OutputSizes::nearest(sizes, QSize(3440, 1440)), QSize(3440, 1440));
     }
 
+    void effective_autoOutput_isTheMonitorsResolution()
+    {
+        QCOMPARE(OutputSizes::effective(OutputSizes::AUTO, QSize(2560, 1440)), QSize(2560, 1440));
+        QCOMPARE(OutputSizes::effective(OutputSizes::AUTO, std::nullopt), OutputSizes::DEFAULT_SIZE);
+        QCOMPARE(OutputSizes::effective(QStringLiteral("1280x800"), QSize(2560, 1440)), OutputSizes::STEAM_DECK_SIZE);
+        QCOMPARE(OutputSizes::effective(QStringLiteral("big"), QSize(2560, 1440)), OutputSizes::DEFAULT_SIZE);
+    }
+
     void parse_textAndBack_roundTrips()
     {
         QCOMPARE(OutputSizes::parse(QStringLiteral("1280X720")), std::optional<QSize>(QSize(1280, 720)));

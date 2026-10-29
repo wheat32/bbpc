@@ -1,4 +1,7 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "bbport_map_near.h"
+#include "shim/bb_env.h"
 #include "common/types.h"
 #include "bbport_game_menu.h"
 
@@ -17,8 +20,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
-
-#include <SDL3/SDL.h>
+#include <SDL3/SDL_events.h>
 
 #include "bbport_guest_hooks.h"
 #include "bbport_settings.h"
@@ -81,17 +83,24 @@ constexpr Layout CONTROLS_LAYOUT{0x4934065, 113020, 0, 6}; // "ControllSetting"
 constexpr u32 TEXT_NAME = 0xc8, TEXT_HELP = 0xc9;          // SP_menu text / SP_one-line help
 constexpr u32 SCREEN_SOUND_ITEM = 110001;                  // "Screen/Sound" in the System menu: ours follow it
 constexpr u32 TITLE_SYSTEM_ITEM = 401304;                  // "System" in the title menu
+/// The System menu's builder (0x1bb3ad0) adds its items to a list at rbp + SYSTEM_LIST, removing
+/// the last one again where a check fails (some depend on the game's state, its last two on the
+/// title screen or the game), and makes the menu out of it at 0x1bb4978. SYSTEM_MENU_DONE is where
+/// its paths meet after the last check: Exit to desktop goes in there, the menu's last item.
+constexpr u64 SYSTEM_MENU_DONE = 0x1bb4561;
+constexpr std::int32_t SYSTEM_LIST = -0x1200;
 /// The title menu (Continue, Load Game, New Game, System, Log In): its builder (0x1b4a3d0) adds the
 /// items to a list, each with ADD_ACTION_ITEM, then makes the menu out of it at TITLE_MENU_DONE,
-/// where its paths meet after the optional items: Quit Game goes in there, last.
+/// where its paths meet after the optional items: Exit to desktop goes in there, last.
 constexpr u64 ADD_ACTION_ITEM = 0x1b4c9a0; ///< (list, name+help texts, action std::function, 0) -> list
 constexpr u64 TITLE_MENU_DONE = 0x1b4ad45; ///< the list at rbp + TITLE_LIST, the title screen in r14
 constexpr std::int32_t TITLE_LIST = -0x11f0;
 
 const u8 MsgLookupPrologue[] = {0x89, 0xf0, 0x48, 0x8b, 0x77, 0x08, 0x48, 0x8b, 0x34, 0xc6};
-const u8 TitleMenuDoneCode[] = {0xc6, 0x85, 0xb9, 0xf7, 0xff, 0xff, 0x00}; // mov byte [rbp-0x847], 0
 const u8 AddPageItemPrologue[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
 const u8 RowInputPrologue[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
+const u8 SystemMenuDoneCode[] = {0x48, 0x8b, 0xbd, 0x90, 0xdf, 0xff, 0xff}; // mov rdi, [rbp-0x2070]
+const u8 TitleMenuDoneCode[] = {0xc6, 0x85, 0xb9, 0xf7, 0xff, 0xff, 0x00};  // mov byte [rbp-0x847], 0
 
 u64 image_base = 0;
 template <typename F>
@@ -220,6 +229,7 @@ enum Field : int
     Preset,
     Sharpness,
     ModelLod,
+    TextureQuality,
     FirstEffect,
     FieldCount = FirstEffect + BbSettings::EFFECT_COUNT
 };
@@ -293,6 +303,7 @@ void Fill(const BbSettings::Values& s, int* values)
             values[ModelLod] = i;
         }
     }
+    values[TextureQuality] = std::clamp(int(s.texture_quality), 0, BbSettings::TqCount - 1);
     for (int e = 0; e < BbSettings::EFFECT_COUNT; ++e)
     {
         values[FirstEffect + e] = s.effects[e];
@@ -338,12 +349,13 @@ struct Page
     std::vector<Row> rows; ///< at most the layout's
 };
 std::vector<Page> pages;
-u32 quit_name = 0, quit_help = 0; ///< Quit Game in the title menu (its help line empty, as the game's)
+// "Exit to desktop", the last item of the System menu (the title screen's too) and of the title
+// menu: a Quit Game to the desktop, as PC games have (Discord requests 2026-10-21; the Nexus mod
+// "Just Exit Game" did it until now). The title menu's help line is empty, as its own items' are.
+u32 exit_name = 0, exit_help = 0, exit_title_help = 0;
 
 void DefineTexts()
 {
-    quit_name = AddText("Quit Game", "Выйти из игры");
-    quit_help = AddText("", "");
     const u32 off = AddText("Off", "Выкл"), on = AddText("On", "Вкл");
     const std::vector<u32> toggle = {off, on};
     const auto page = [](const char* en, const char* ru, const char* help_en, const char* help_ru, const Layout& layout)
@@ -392,7 +404,8 @@ void DefineTexts()
     }
     row(Upscaler, "Upscaler", "Апскейлер", "Temporal upscaler and anti-aliasing", "Временной апскейлер и сглаживание",
         {off, AddText("FSR 3.1", "FSR 3.1"), AddText("FSR 4", "FSR 4"), AddText("FSR 4.1.1", "FSR 4.1.1"),
-         AddText("TAA", "TAA"), AddText("DLSS", "DLSS")},
+         AddText("TAA", "TAA"), AddText("DLSS", "DLSS"), AddText("FSR 1", "FSR 1"),
+         AddText("FSR 4 (AMD DLL)", "FSR 4 (DLL AMD)")},
         Kind::Select);
     row(Preset, "Quality preset", "Пресет", "Scene resolution relative to the output",
         "Разрешение сцены относительно вывода",
@@ -406,9 +419,17 @@ void DefineTexts()
         {AddText("Highest", "Максимальная"), AddText("Game default", "Как в игре"), AddText("Lower", "Ниже"),
          AddText("Lowest", "Минимальная")},
         Kind::Select);
+    row(TextureQuality, "Texture quality", "Качество текстур",
+        "Large textures in VRAM: half or a quarter of their size (from the next area); auto: half "
+        "with 3 GB of VRAM or less",
+        "Крупные текстуры в видеопамяти: половина или четверть размера (со следующей локации); "
+        "авто: половина при 3 ГБ видеопамяти и меньше",
+        {AddText("Auto", "Авто"), AddText("Full", "Полное"), AddText("Half", "Половина"),
+         AddText("Quarter", "Четверть")},
+        Kind::Select);
 
-    page("Effects", "Эффекты", "The game's effects (bbport; the first seven at once)",
-         "Эффекты игры (bbport; первые семь сразу)", CONTROLS_LAYOUT);
+    page("Effects", "Эффекты", "The game's effects (bbport): aberration and DoF at once, the rest at the next load",
+         "Эффекты игры (bbport): аберрация и DoF сразу, остальные — со следующей загрузки", CONTROLS_LAYOUT);
 
     // Short names for the game's narrow name column (BbSettings::Effects order); the help line
     // has the details.
@@ -422,14 +443,16 @@ void DefineTexts()
          "Цветные каймы по краям кадра"},
         {"effect_dof", "Depth of field", "Глубина резкости", "Blur of distant and near objects (DoF)",
          "Размытие дальних и близких объектов (DoF)"},
-        {"effect_motion_blur", "Motion blur", "Размытие в движении", "Blur when the camera turns",
-         "Размытие при повороте камеры"},
-        {"effect_ssao", "Ambient occlusion", "Затенение SSAO", "Shading in corners and contacts (SSAO)",
-         "Затенение в углах и местах касания (SSAO)"},
+        {"effect_motion_blur", "Motion blur", "Размытие в движении", "Blur when the camera turns (from the next load)",
+         "Размытие при повороте камеры (со следующей загрузки)"},
+        {"effect_ssao", "Ambient occlusion", "Затенение SSAO",
+         "Shading in corners and contacts (SSAO; from the next load)",
+         "Затенение в углах и местах касания (SSAO; со следующей загрузки)"},
         {"effect_game_aa", "Game's own AA", "Сглаживание игры", "The game's own anti-aliasing",
          "Собственное сглаживание игры", false},
-        {"effect_dynamic_shadows", "Dynamic shadows", "Динамические тени", "Shadows from dynamic lights",
-         "Тени от динамических источников света"},
+        {"effect_dynamic_shadows", "Dynamic shadows", "Динамические тени",
+         "Shadows from dynamic lights (from the next load)",
+         "Тени от динамических источников света (со следующей загрузки)"},
         {"effect_ssr", "SSR reflections", "Отражения SSR", "Screen-space reflections (not in the original)",
          "Экранные отражения (не было в оригинале)"},
         {"skip_intro", "Skip intros", "Пропуск заставок", "Skip the startup logos and intro",
@@ -462,6 +485,10 @@ void DefineTexts()
         row(Field(FirstEffect + e), name != nullptr ? name->en : effect.label,
             name != nullptr ? name->ru : effect.label_ru, help_en.c_str(), help_ru.c_str(), toggle);
     }
+    exit_name = AddText("Exit to desktop", "Выйти на рабочий стол");
+    exit_help =
+        AddText("Closes the game, as its window's close button does", "Закрывает игру, как кнопка закрытия окна");
+    exit_title_help = AddText("", "");
 }
 
 // ---- The game's structures, as its own code builds them. ----
@@ -528,6 +555,7 @@ bool UpscalerAvailable(int i)
     return i == BbSettings::UpscalerFsr4     ? s.fsr4_supported.load()
            : i == BbSettings::UpscalerFsr411 ? s.fsr411_supported.load()
            : i == BbSettings::UpscalerDlss   ? s.dlss_supported.load()
+           : i == BbSettings::UpscalerFsrAmd ? s.fsr_amd_supported.load()
                                              : true;
 }
 
@@ -668,6 +696,16 @@ void* PS4_SYSV_ABI PageFactory(void* out, void* arg)
 {
     return Factory(out, arg, reinterpret_cast<void*>(&Content<P>), P);
 }
+/// "Exit to desktop": the window's quit (gpu/shim/window.cpp ends the game), and a page for the
+/// menu meanwhile (it expects one).
+void* PS4_SYSV_ABI QuitFactory(void* out, void* arg)
+{
+    std::printf("Game menu: exit to desktop\n");
+    SDL_Event event{};
+    event.type = SDL_EVENT_QUIT;
+    SDL_PushEvent(&event);
+    return Factory(out, arg, reinterpret_cast<void*>(&Content<0>), 0);
+}
 constexpr std::size_t MAX_PAGES = 6;
 void* const factories[MAX_PAGES] = {reinterpret_cast<void*>(&PageFactory<0>), reinterpret_cast<void*>(&PageFactory<1>),
                                     reinterpret_cast<void*>(&PageFactory<2>), reinterpret_cast<void*>(&PageFactory<3>),
@@ -698,11 +736,7 @@ const char16_t* PS4_SYSV_ABI LookupHook(void* repository, u32 table, u32 categor
     if (OurText(id))
     {
         // BB_GAME_MENU_TRACE=1: how often the game asks for our texts (per 2 s).
-        static const bool count = []
-        {
-            const char* env = std::getenv("BB_GAME_MENU_TRACE");
-            return env != nullptr && env[0] == '1';
-        }();
+        static const bool count = bb_env_on("BB_GAME_MENU_TRACE");
         if (count)
         {
             static std::atomic<u64> lookups{0};
@@ -735,11 +769,7 @@ const char16_t* PS4_SYSV_ABI LookupHook(void* repository, u32 table, u32 categor
     const char16_t* text = lookup_original(repository, table, category, id);
     // BB_MSG_TRACE=1 (diagnostics): the game's text lookups per 2 s by category, with an example
     // id and caller and its text (which menu is on screen, issue #255).
-    static const bool msg_trace = []
-    {
-        const char* env = std::getenv("BB_MSG_TRACE");
-        return env != nullptr && env[0] == '1';
-    }();
+    static const bool msg_trace = bb_env_on("BB_MSG_TRACE");
     if (msg_trace)
     {
         struct Seen
@@ -779,18 +809,14 @@ const char16_t* PS4_SYSV_ABI LookupHook(void* repository, u32 table, u32 categor
             seen.clear();
         }
     }
-    static const bool trace = []
-    {
-        const char* env = std::getenv("BB_GAME_MENU_TRACE");
-        return env != nullptr && env[0] == '1';
-    }();
+    static const bool trace = bb_env_on("BB_GAME_MENU_TRACE");
     if (trace && id >= 110000 && id < 120000)
     {
         std::printf("Game menu: text %#x/%u%s from %#llx\n", category, id, building_page >= 0 ? " (our page)" : "",
                     (unsigned long long)(reinterpret_cast<u64>(__builtin_return_address(0)) - image_base));
     }
-    // The game's language from its System texts: the title menu's (before Quit Game is looked up)
-    // or the System menu's.
+    // The game's language from its System texts: the title menu's (before its Exit to desktop is
+    // looked up) or the System menu's.
     if (category == TEXT_NAME && (id == SCREEN_SOUND_ITEM || id == TITLE_SYSTEM_ITEM) && text != nullptr)
     {
         if (id == SCREEN_SOUND_ITEM)
@@ -838,7 +864,159 @@ void* PS4_SYSV_ABI AddHook(void* menu, void* pair, void* function, void* out)
     return result;
 }
 
-constexpr std::size_t STUB_SIZE = 64; ///< each hook's room in the stub page (Detour, PatchTitleMenu)
+/// At SYSTEM_MENU_DONE (the game's code, System V ABI): Exit to desktop after the builder's items.
+void PS4_SYSV_ABI AddSystemExitItem(void* list, void*)
+{
+    AddItem(list, exit_name, exit_help, reinterpret_cast<void*>(&QuitFactory));
+}
+
+// ---- Exit to desktop in the title menu ----
+/// Its action: a std::function target with the eight entries the title's own items have (clone,
+/// clone, call, target type, destroy, destructor, deallocate, target). Choosing it ends the game
+/// as the window's close button does (the overlay's Quit game); the menu gets no next screen, a
+/// null result, which its activation code allows (0x1be9806, 0x1c1a5e6).
+struct QuitAction
+{
+    const void* const* vtable;
+    void* title; ///< what the title's own items keep (not used)
+};
+void* PS4_SYSV_ABI QuitClone(const QuitAction* self, QuitAction* to)
+{
+    QuitAction* copy = to != nullptr ? to : new QuitAction;
+    *copy = *self;
+    return copy;
+}
+void** PS4_SYSV_ABI QuitCall(void** out, QuitAction*, void*)
+{
+    // The menu calls an item's action twice per choice: the game is closed once.
+    static std::atomic<bool> quitting{false};
+    if (quitting.exchange(true) == false)
+    {
+        std::printf("Game menu: exit to desktop (title menu)\n");
+        SDL_Event quit{};
+        quit.type = SDL_EVENT_QUIT;
+        SDL_PushEvent(&quit);
+    }
+    *out = nullptr;
+    return out;
+}
+void* PS4_SYSV_ABI QuitTargetType(const QuitAction*)
+{
+    return nullptr;
+}
+void PS4_SYSV_ABI QuitDestroy(QuitAction* self, int deallocate)
+{
+    if (deallocate != 0)
+    {
+        delete self;
+    }
+}
+void PS4_SYSV_ABI QuitDestructor(QuitAction*)
+{
+}
+void PS4_SYSV_ABI QuitDeallocate(QuitAction* self)
+{
+    delete self;
+}
+void** PS4_SYSV_ABI QuitTarget(QuitAction* self)
+{
+    return &self->title;
+}
+const void* const QUIT_VTABLE[] = {
+    reinterpret_cast<const void*>(&QuitClone),      reinterpret_cast<const void*>(&QuitClone),
+    reinterpret_cast<const void*>(&QuitCall),       reinterpret_cast<const void*>(&QuitTargetType),
+    reinterpret_cast<const void*>(&QuitDestroy),    reinterpret_cast<const void*>(&QuitDestructor),
+    reinterpret_cast<const void*>(&QuitDeallocate), reinterpret_cast<const void*>(&QuitTarget)};
+
+/// At TITLE_MENU_DONE (the game's code, System V ABI): Exit to desktop after the builder's items.
+void PS4_SYSV_ABI AddTitleExitItem(void* list, void* title)
+{
+    using AddAction = void*(PS4_SYSV_ABI*)(void*, void*, void*, u64);
+    alignas(16) u8 pair[2 * TEXT_SIZE] = {};
+    MakeTexts(pair, exit_name, exit_title_help);
+    alignas(16) u8 function[FUNCTION_SIZE] = {};
+    *reinterpret_cast<const void* const**>(function) = QUIT_VTABLE;
+    *reinterpret_cast<void**>(function + 8) = title;
+    *reinterpret_cast<void**>(function + 0x20) = function;
+    Game<AddAction>(ADD_ACTION_ITEM)(list, pair, function, 0);
+    DestroyFunction(function);
+    DestroyTexts(pair);
+}
+
+constexpr std::size_t STUB_SIZE = 64; ///< each hook's room in the stub page (Detour, PatchJoin)
+
+/// Where a menu builder's paths meet after its last item, and what the port adds to its list there.
+struct Join
+{
+    const char* menu; ///< for the log
+    u64 va;           ///< the instruction the `jmp` replaces
+    const u8* code;   ///< its bytes, at least the `jmp`'s five
+    std::size_t length;
+    std::int32_t list;   ///< the builder's item list at rbp + list
+    bool replaced_first; ///< the replaced instruction runs before the call (a load it feeds cannot)
+    void(PS4_SYSV_ABI* add)(void* list, void* r14);
+};
+constexpr Join SYSTEM_JOIN{"System", SYSTEM_MENU_DONE,  SystemMenuDoneCode, sizeof(SystemMenuDoneCode), SYSTEM_LIST,
+                           false,    &AddSystemExitItem};
+constexpr Join TITLE_JOIN{"title", TITLE_MENU_DONE,  TitleMenuDoneCode, sizeof(TitleMenuDoneCode), TITLE_LIST,
+                          true,    &AddTitleExitItem};
+
+/// `jmp` at the join to a stub: join.add(rbp + join.list, r14) and the instruction it replaced, then
+/// `jmp` back. Nothing in caller-saved registers is used after these points but what the replaced
+/// instruction loads, and the builders' frames keep the stack 16-byte aligned there.
+bool PatchJoin(unsigned char* image, const Join& join, u8*& cursor)
+{
+    u8* site = image + join.va;
+    if (std::memcmp(site, join.code, join.length) != 0)
+    {
+        std::printf("Game menu: unexpected code at %#llx, no Exit to desktop in the %s menu\n",
+                    (unsigned long long)join.va, join.menu);
+        return false;
+    }
+    u8* at = cursor;
+    const auto put = [&at](const void* bytes, std::size_t length)
+    {
+        std::memcpy(at, bytes, length);
+        at += length;
+    };
+    const u8 lea_rdi_rbp[] = {0x48, 0x8d, 0xbd}; // lea rdi, [rbp + disp32]
+    const u8 mov_rsi_r14[] = {0x4c, 0x89, 0xf6};
+    const u8 movabs_rax[] = {0x48, 0xb8};
+    const u8 call_rax[] = {0xff, 0xd0};
+    const void* const target = reinterpret_cast<const void*>(join.add);
+    if (join.replaced_first)
+    {
+        put(join.code, join.length);
+    }
+    put(lea_rdi_rbp, sizeof(lea_rdi_rbp));
+    put(&join.list, sizeof(join.list));
+    put(mov_rsi_r14, sizeof(mov_rsi_r14));
+    put(movabs_rax, sizeof(movabs_rax));
+    put(&target, sizeof(target));
+    put(call_rax, sizeof(call_rax));
+    if (join.replaced_first == false)
+    {
+        put(join.code, join.length);
+    }
+    const std::int64_t back = std::int64_t(site + join.length) - std::int64_t(at + 5);
+    const std::int64_t to = std::int64_t(cursor) - std::int64_t(site + 5);
+    if (back != std::int32_t(back) || to != std::int32_t(to))
+    {
+        std::printf("Game menu: stubs out of jump range, no Exit to desktop in the %s menu\n", join.menu);
+        return false;
+    }
+    const std::int32_t back32 = std::int32_t(back), to32 = std::int32_t(to);
+    *at++ = 0xe9; // jmp rel32
+    put(&back32, sizeof(back32));
+    site[0] = 0xe9;
+    std::memcpy(site + 1, &to32, sizeof(to32));
+    for (std::size_t i = 5; i < join.length; ++i)
+    {
+        site[i] = 0xcc; // never reached: the stub jumps back past it
+    }
+    cursor += STUB_SIZE;
+    return true;
+}
 
 /// `jmp hook` at the function (via a near thunk); its moved prologue + `jmp` back is the original.
 bool Detour(unsigned char* image, u64 va, const u8* prologue, std::size_t length, void* hook, void** original,
@@ -884,150 +1062,15 @@ bool Detour(unsigned char* image, u64 va, const u8* prologue, std::size_t length
 u8* MapNear(unsigned char* image, u64 image_size, std::size_t size)
 {
     const u64 base = reinterpret_cast<u64>(image);
-    for (u64 k = 1; k <= 64; ++k)
-    {
-        for (const u64 hint : {base - k * (24ull << 20), base + image_size + k * (24ull << 20)})
-        {
-            void* p = mmap(reinterpret_cast<void*>(hint), size, PROT_READ | PROT_WRITE,
-                           MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-            if (p != MAP_FAILED)
-            {
-                return static_cast<u8*>(p);
-            }
-        }
-    }
-    return nullptr;
-}
-
-// ---- Quit Game in the title menu ----
-/// Its action: a std::function target with the eight entries the title's own items have (clone,
-/// clone, call, target type, destroy, destructor, deallocate, target). Choosing it ends the game
-/// as the window's close button does (the overlay's Quit game); the menu gets no next screen, a
-/// null result, which its activation code allows (0x1be9806, 0x1c1a5e6).
-struct QuitAction
-{
-    const void* const* vtable;
-    void* title; ///< what the title's own items keep (not used)
-};
-void* PS4_SYSV_ABI QuitClone(const QuitAction* self, QuitAction* to)
-{
-    QuitAction* copy = to != nullptr ? to : new QuitAction;
-    *copy = *self;
-    return copy;
-}
-void** PS4_SYSV_ABI QuitCall(void** out, QuitAction*, void*)
-{
-    // The menu calls an item's action twice per choice: the game is closed once.
-    static std::atomic<bool> quitting{false};
-    if (quitting.exchange(true) == false)
-    {
-        std::printf("Game menu: Quit Game chosen in the title menu\n");
-        SDL_Event quit{};
-        quit.type = SDL_EVENT_QUIT;
-        SDL_PushEvent(&quit);
-    }
-    *out = nullptr;
-    return out;
-}
-void* PS4_SYSV_ABI QuitTargetType(const QuitAction*)
-{
-    return nullptr;
-}
-void PS4_SYSV_ABI QuitDestroy(QuitAction* self, int deallocate)
-{
-    if (deallocate != 0)
-    {
-        delete self;
-    }
-}
-void PS4_SYSV_ABI QuitDestructor(QuitAction*)
-{
-}
-void PS4_SYSV_ABI QuitDeallocate(QuitAction* self)
-{
-    delete self;
-}
-void** PS4_SYSV_ABI QuitTarget(QuitAction* self)
-{
-    return &self->title;
-}
-const void* const QUIT_VTABLE[] = {
-    reinterpret_cast<const void*>(&QuitClone),      reinterpret_cast<const void*>(&QuitClone),
-    reinterpret_cast<const void*>(&QuitCall),       reinterpret_cast<const void*>(&QuitTargetType),
-    reinterpret_cast<const void*>(&QuitDestroy),    reinterpret_cast<const void*>(&QuitDestructor),
-    reinterpret_cast<const void*>(&QuitDeallocate), reinterpret_cast<const void*>(&QuitTarget)};
-
-/// At TITLE_MENU_DONE (the game's code, System V ABI): Quit Game after the builder's items.
-void PS4_SYSV_ABI AddQuitItem(void* list, void* title)
-{
-    using AddAction = void*(PS4_SYSV_ABI*)(void*, void*, void*, u64);
-    alignas(16) u8 pair[2 * TEXT_SIZE] = {};
-    MakeTexts(pair, quit_name, quit_help);
-    alignas(16) u8 function[FUNCTION_SIZE] = {};
-    *reinterpret_cast<const void* const**>(function) = QUIT_VTABLE;
-    *reinterpret_cast<void**>(function + 8) = title;
-    *reinterpret_cast<void**>(function + 0x20) = function;
-    Game<AddAction>(ADD_ACTION_ITEM)(list, pair, function, 0);
-    DestroyFunction(function);
-    DestroyTexts(pair);
-}
-
-/// `jmp` at TITLE_MENU_DONE to a stub: the instruction it replaced, AddQuitItem(rbp + TITLE_LIST,
-/// r14), `jmp` back. Nothing in caller-saved registers is used after that point, and the
-/// builder's frame keeps the stack 16-byte aligned there.
-bool PatchTitleMenu(unsigned char* image, u8*& cursor)
-{
-    u8* site = image + TITLE_MENU_DONE;
-    if (std::memcmp(site, TitleMenuDoneCode, sizeof(TitleMenuDoneCode)) != 0)
-    {
-        std::printf("Game menu: unexpected code at %#llx, no Quit Game in the title menu\n",
-                    (unsigned long long)TITLE_MENU_DONE);
-        return false;
-    }
-    u8* at = cursor;
-    const auto put = [&at](const void* bytes, std::size_t length)
-    {
-        std::memcpy(at, bytes, length);
-        at += length;
-    };
-    const u8 lea_rdi_rbp[] = {0x48, 0x8d, 0xbd}; // lea rdi, [rbp + disp32]
-    const u8 mov_rsi_r14[] = {0x4c, 0x89, 0xf6};
-    const u8 movabs_rax[] = {0x48, 0xb8};
-    const u8 call_rax[] = {0xff, 0xd0};
-    const void* const target = reinterpret_cast<const void*>(&AddQuitItem);
-    put(TitleMenuDoneCode, sizeof(TitleMenuDoneCode));
-    put(lea_rdi_rbp, sizeof(lea_rdi_rbp));
-    put(&TITLE_LIST, sizeof(TITLE_LIST));
-    put(mov_rsi_r14, sizeof(mov_rsi_r14));
-    put(movabs_rax, sizeof(movabs_rax));
-    put(&target, sizeof(target));
-    put(call_rax, sizeof(call_rax));
-    const std::int64_t back = std::int64_t(site + sizeof(TitleMenuDoneCode)) - std::int64_t(at + 5);
-    const std::int64_t to = std::int64_t(cursor) - std::int64_t(site + 5);
-    if (back != std::int32_t(back) || to != std::int32_t(to))
-    {
-        std::printf("Game menu: stubs out of jump range, no Quit Game in the title menu\n");
-        return false;
-    }
-    const std::int32_t back32 = std::int32_t(back), to32 = std::int32_t(to);
-    *at++ = 0xe9; // jmp rel32
-    put(&back32, sizeof(back32));
-    site[0] = 0xe9;
-    std::memcpy(site + 1, &to32, sizeof(to32));
-    for (std::size_t i = 5; i < sizeof(TitleMenuDoneCode); ++i)
-    {
-        site[i] = 0xcc; // never reached: the stub jumps back past it
-    }
-    cursor += STUB_SIZE;
-    return true;
+    return static_cast<u8*>(
+        BbMapNear::Map(base, base + image_size, size, PROT_READ | PROT_WRITE, 24ull << 20, "Game menu"));
 }
 
 } // namespace
 
 void PatchImage(unsigned char* image, std::uint64_t size)
 {
-    const char* env = std::getenv("BB_GAME_MENU");
-    if (env != nullptr && env[0] == '0')
+    if (bb_env_off("BB_GAME_MENU"))
     {
         return;
     }
@@ -1066,12 +1109,14 @@ void PatchImage(unsigned char* image, std::uint64_t size)
                reinterpret_cast<void*>(&AddHook), reinterpret_cast<void**>(&add_original), cursor) &&
         Detour(image, ROW_INPUT, RowInputPrologue, sizeof(RowInputPrologue), reinterpret_cast<void*>(&RowInputHook),
                reinterpret_cast<void**>(&row_input_original), cursor);
-    // BB_TITLE_QUIT=0: the title menu as the game has it (no Quit Game).
-    const char* quit_env = std::getenv("BB_TITLE_QUIT");
-    const bool quit = (quit_env != nullptr && quit_env[0] == '0') == false && PatchTitleMenu(image, cursor);
+    // Exit to desktop: its text and the System menu's item come through the hooks above.
+    const bool system_exit = ok && PatchJoin(image, SYSTEM_JOIN, cursor);
+    // BB_TITLE_QUIT=0: the title menu as the game has it (no Exit to desktop).
+    const bool title_exit = ok && bb_env_off("BB_TITLE_QUIT") == false && PatchJoin(image, TITLE_JOIN, cursor);
     mprotect(stubs, page, PROT_READ | PROT_EXEC);
-    std::printf("Game menu: %s (%zu pages in System)%s\n", ok ? "the port's pages are in" : "hooks failed, off",
-                pages.size(), quit ? "; Quit Game in the title menu" : "");
+    std::printf("Game menu: %s (%zu pages in System); Exit to desktop last in System: %s, in the title menu: %s\n",
+                ok ? "the port's pages are in" : "hooks failed, off", pages.size(), system_exit ? "yes" : "no",
+                title_exit ? "yes" : "no");
 }
 
 void Poll()
@@ -1121,11 +1166,13 @@ void Poll()
         // aspect ratio's sizes, RefreshOutputRow).
         const int aspect = std::clamp(now_values[Aspect], 0, BbSettings::AspectCount - 1);
         s.output_res = BbSettings::PackSize(MenuOutput(aspect, now_values[OutputRes]));
+        s.output_auto = false;
         s.aspect = aspect;
     }
     else if (now_values[OutputRes] != applied[OutputRes])
     {
         s.output_res = BbSettings::PackSize(MenuOutput(s.aspect, now_values[OutputRes]));
+        s.output_auto = false;
     }
     const int upscaler = std::clamp(now_values[Upscaler], 0, BbSettings::UpscalerCount - 1);
     s.upscaler = UpscalerAvailable(upscaler) ? upscaler : int(BbSettings::UpscalerFsr3);
@@ -1136,9 +1183,16 @@ void Poll()
         s.sharpness = std::clamp(now_values[Sharpness], 0, SHARPNESS_STEPS - 1) * SHARPNESS_STEP;
     }
     s.model_lod = LOD_VALUES[std::clamp(now_values[ModelLod], 0, 3)];
+    s.texture_quality = std::clamp(now_values[TextureQuality], 0, BbSettings::TqCount - 1);
     for (int e = 0; e < BbSettings::EFFECT_COUNT; ++e)
     {
         s.effects[e] = now_values[FirstEffect + e] != 0;
+    }
+    // The game's AA switch here sets the anti-aliasing choice (the overlay has all of them).
+    const int game_aa = FirstEffect + BbSettings::GAME_AA_EFFECT;
+    if (now_values[game_aa] != applied[game_aa])
+    {
+        s.anti_aliasing = now_values[game_aa] ? int(BbSettings::AaGame) : int(BbSettings::AaOff);
     }
     BbGuestHooks::ApplyGameEffects();
     std::memcpy(applied, now_values, sizeof(now_values));

@@ -13,7 +13,36 @@ private slots:
         ini.parse(QString());
         QCOMPARE(ini.value(QStringLiteral("upscaler")), QStringLiteral("fsr4"));
         QCOMPARE(ini.value(QStringLiteral("effect_ssr")), QStringLiteral("0"));
+        QCOMPARE(ini.value(QStringLiteral("output_res")), QStringLiteral("auto"));
+        QCOMPARE(ini.value(QStringLiteral("low_latency")), QStringLiteral("on"));
         QVERIFY(ini.inFile(QStringLiteral("upscaler")) == false);
+    }
+
+    void defaults_removedSettings_areNotWritten()
+    {
+        // Live resolution changes are always on and the game's AA follows anti_aliasing: neither
+        // key is the launcher's any more.
+        PortIni ini;
+        ini.parse(QString());
+        QVERIFY(ini.contains(QStringLiteral("live_resolution")) == false);
+        QVERIFY(ini.contains(QStringLiteral("effect_game_aa")) == false);
+        QVERIFY(ini.serialize().contains(QStringLiteral("live_resolution")) == false);
+    }
+
+    void saveChanges_oldLiveResolutionKey_staysAsItIs()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath(QStringLiteral("bbport.ini"));
+        PortIni shown;
+        shown.parse(QStringLiteral("live_resolution=0\n"));
+        QVERIFY(shown.save(path));
+        PortIni edited = shown;
+        edited.setValue(QStringLiteral("preset"), QStringLiteral("2"));
+        QVERIFY(PortIni::saveChanges(path, shown, edited));
+        PortIni result;
+        result.load(path);
+        QCOMPARE(result.value(QStringLiteral("live_resolution")), QStringLiteral("0"));
+        QCOMPARE(result.value(QStringLiteral("preset")), QStringLiteral("2"));
     }
 
     void serialize_editedKey_isRewrittenInPlaceAndCommentsStay()

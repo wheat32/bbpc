@@ -1,8 +1,11 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <cstring>
+#include "shim/bb_env.h"
 #include <memory>
 #include <utility>
 
+#include "common/thread.h"
 #include "bbport_frame_rate.h"
 #include "common/assert.h"
 #include "common/elf_info.h"
@@ -13,6 +16,7 @@
 #include "platform/interrupts.h"
 #include "platform/kernel/event_queue.h"
 #include "platform/videoout/display.h"
+#include "render/vk_low_latency.h"
 #include "platform/videoout/videoout.h"
 #include "render/presenter.h"
 
@@ -167,7 +171,7 @@ s32 PS4_SYSV_ABI sceVideoOutSetFlipRate(s32 handle, s32 rate)
     port->flip_rate = BbFrameRate::Unlocked() ? 0 : rate;
     // BB_FLIP_RATE=n: the rate asked for is replaced (0: every vblank; games without frame rate
     // hooks, e.g. 60 FPS where a game asks for 30).
-    const char* forced = std::getenv("BB_FLIP_RATE");
+    const char* forced = bb_env("BB_FLIP_RATE");
     if (forced != nullptr && *forced)
     {
         port->flip_rate = std::atoi(forced);
@@ -207,6 +211,7 @@ s32 PS4_SYSV_ABI sceVideoOutSubmitFlip(s32 handle, s32 index, s32 flip_mode, s64
     {
         LOG_WARNING(Lib_VideoOut, "flip mode {}", flip_mode);
     }
+    Vulkan::LowLatency::Get().GameFrameEnd(); // the game's thread: its frame is handed over
     return display->SubmitFlip(port, index, flip_arg) ? BbErr::OK : ERROR_FLIP_QUEUE_FULL;
 }
 
@@ -473,10 +478,31 @@ s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32, s64 flip_arg, void**)
     BbIrq::Once(BbIrq::Line::GfxFlip,
                 [port, buf_id, flip_arg](BbIrq::Line)
                 {
-                    ASSERT_MSG(port->buffer_labels[buf_id] == 1, "flip interrupt out of order");
+                    // The display buffer's label is written by the GPU (end-of-pipe labels): a slow GPU may not
+                    // have written it yet when the CPU reaches the flip (GTX 1050: "flip interrupt out of
+                    // order", the game stopped). Waited for a while, then the flip goes on regardless.
+                    if (port->buffer_labels[buf_id] != 1)
+                    {
+                        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+                        while (__atomic_load_n(&port->buffer_labels[buf_id], __ATOMIC_ACQUIRE) != 1 &&
+                               std::chrono::steady_clock::now() < until)
+                        {
+                            Common::AccurateSleep(std::chrono::microseconds(100), nullptr, false);
+                        }
+                        if (port->buffer_labels[buf_id] != 1)
+                        {
+                            static std::atomic<u32> told{0};
+                            if (told.fetch_add(1, std::memory_order_relaxed) < 8)
+                            {
+                                std::printf("VideoOut: flip of buffer %u before its label (%llu): shown anyway\n",
+                                            buf_id, (unsigned long long)port->buffer_labels[buf_id]);
+                            }
+                        }
+                    }
                     const bool queued = display->SubmitFlip(port, s32(buf_id), flip_arg, true);
                     ASSERT_MSG(queued, "end-of-pipe flip refused");
                 });
+    Vulkan::LowLatency::Get().GameFrameEnd(); // the game's thread: its frame is handed over
     return BbErr::OK;
 }
 

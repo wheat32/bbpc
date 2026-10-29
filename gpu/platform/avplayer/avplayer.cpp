@@ -1,6 +1,13 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <algorithm>
+#include "shim/bb_env.h"
 #include <cctype>
+#include <chrono>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <mutex>
 #include <string_view>
 
 #include "common/logging/log.h"
@@ -20,6 +27,35 @@ constexpr s32 ERROR_OPERATION_FAILED = s32(0x806A0002);
 constexpr s32 ERROR_NOT_SUPPORTED = s32(0x806A0004);
 
 using Handle = Player*;
+
+/// BB_AVPLAYER_TRACE=1 (diagnostics): the game's calls in order, with their results and the time
+/// since the first (the opening movie's crash on Windows, 2026-10-27).
+void Trace(const char* format, ...)
+{
+    static const bool on = bb_env_on("BB_AVPLAYER_TRACE");
+    if (on == false)
+    {
+        return;
+    }
+    static const auto start = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    char text[256];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(text, sizeof(text), format, args);
+    va_end(args);
+    std::printf("AvPlayer trace %.1f ms: %s\n", ms, text);
+}
+
+/// The player that plays now (the game has one at a time): a key press stops it (bbgpu_video_skip).
+std::mutex active_mutex;
+Player* active_player = nullptr;
+
+void NoteCreated(Player* player)
+{
+    std::scoped_lock lock{active_mutex};
+    active_player = player;
+}
 
 /// From the file name's extension (a URI's query and fragment ignored).
 AvPlayerSourceType SourceTypeOf(std::string_view path)
@@ -82,7 +118,11 @@ Handle PS4_SYSV_ABI sceAvPlayerInit(AvPlayerInitData* data)
         LOG_ERROR(Lib_AvPlayer, "sceAvPlayerInit needs all four allocators");
         return nullptr;
     }
-    return new Player(*data);
+    BbAvPlayer::Player* player = new Player(*data);
+    NoteCreated(player);
+    Trace("Init -> %p (auto start %d, events %d)", (void*)player, int(data->auto_start),
+          data->event_replacement.event_callback != nullptr);
+    return player;
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerInitEx(const AvPlayerInitDataEx* data, Handle* player)
@@ -99,6 +139,8 @@ s32 PS4_SYSV_ABI sceAvPlayerInitEx(const AvPlayerInitDataEx* data, Handle* playe
     init.num_output_video_framebuffers = data->num_output_video_framebuffers;
     init.auto_start = data->auto_start;
     *player = new Player(init);
+    NoteCreated(*player);
+    Trace("InitEx -> %p (auto start %d)", (void*)*player, int(data->auto_start));
     return BbErr::OK;
 }
 
@@ -113,6 +155,14 @@ s32 PS4_SYSV_ABI sceAvPlayerClose(Handle player)
     {
         return ERROR_INVALID_PARAMS;
     }
+    {
+        std::scoped_lock lock{active_mutex};
+        if (active_player == player)
+        {
+            active_player = nullptr;
+        }
+    }
+    Trace("Close %p", (void*)player);
     delete player;
     return BbErr::OK;
 }
@@ -123,7 +173,9 @@ s32 PS4_SYSV_ABI sceAvPlayerAddSource(Handle player, const char* path)
     {
         return ERROR_INVALID_PARAMS;
     }
-    return AddSource(player, path, AvPlayerSourceType::Unknown);
+    const s32 result = AddSource(player, path, AvPlayerSourceType::Unknown);
+    Trace("AddSource %p %s -> %#x", (void*)player, path, unsigned(result));
+    return result;
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerAddSourceEx(Handle player, AvPlayerUriType uri_type, AvPlayerSourceDetails* details)
@@ -142,6 +194,7 @@ s32 PS4_SYSV_ABI sceAvPlayerStreamCount(Handle player)
         return ERROR_INVALID_PARAMS;
     }
     const s32 count = player->StreamCount();
+    Trace("StreamCount %p -> %d", (void*)player, count);
     return count < 0 ? ERROR_OPERATION_FAILED : count;
 }
 
@@ -151,12 +204,20 @@ s32 PS4_SYSV_ABI sceAvPlayerGetStreamInfo(Handle player, u32 index, AvPlayerStre
     {
         return ERROR_INVALID_PARAMS;
     }
-    return Result(player->StreamInfo(index, *info));
+    const s32 result = Result(player->StreamInfo(index, *info));
+    const char* language = info->type == AvPlayerStreamType::Audio   ? info->details.audio.language_code
+                           : info->type == AvPlayerStreamType::Video ? info->details.video.language_code
+                                                                     : info->details.subs.language_code;
+    Trace("GetStreamInfo %p %u -> %#x: type %d, duration %llu, language '%.4s'", (void*)player, index, unsigned(result),
+          int(info->type), (unsigned long long)info->duration, language);
+    return result;
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerEnableStream(Handle player, u32 index)
 {
-    return player != nullptr ? Result(player->EnableStream(index)) : ERROR_INVALID_PARAMS;
+    const s32 result = player != nullptr ? Result(player->EnableStream(index)) : ERROR_INVALID_PARAMS;
+    Trace("EnableStream %p %u -> %#x", (void*)player, index, unsigned(result));
+    return result;
 }
 
 /// Not supported: every enabled stream plays.
@@ -172,12 +233,16 @@ s32 PS4_SYSV_ABI sceAvPlayerChangeStream()
 
 s32 PS4_SYSV_ABI sceAvPlayerStart(Handle player)
 {
-    return player != nullptr ? Result(player->Start()) : ERROR_INVALID_PARAMS;
+    const s32 result = player != nullptr ? Result(player->Start()) : ERROR_INVALID_PARAMS;
+    Trace("Start %p -> %#x", (void*)player, unsigned(result));
+    return result;
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerStop(Handle player)
 {
-    return player != nullptr ? Result(player->Stop()) : ERROR_INVALID_PARAMS;
+    const s32 result = player != nullptr ? Result(player->Stop()) : ERROR_INVALID_PARAMS;
+    Trace("Stop %p -> %#x", (void*)player, unsigned(result));
+    return result;
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerPause(Handle player)
@@ -235,7 +300,17 @@ bool PS4_SYSV_ABI sceAvPlayerGetVideoDataEx(Handle player, AvPlayerFrameInfoEx* 
 
 bool PS4_SYSV_ABI sceAvPlayerIsActive(Handle player)
 {
-    return player != nullptr && player->IsActive();
+    const bool active = player != nullptr && player->IsActive();
+    // Said when it changes (the game asks every frame).
+    static Handle last_player = nullptr;
+    static int last = -1;
+    if (player != last_player || int(active) != last)
+    {
+        last_player = player;
+        last = int(active);
+        Trace("IsActive %p -> %d", (void*)player, int(active));
+    }
+    return active;
 }
 
 u64 PS4_SYSV_ABI sceAvPlayerCurrentTime(Handle player)
@@ -284,3 +359,22 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym)
 }
 
 } // namespace BbAvPlayer
+
+// A video playing now (the opening movie, the endings): the keyboard's Enter and Escape and the
+// gamepad's Options stop it (src/runtime_pad.c). From the SrShadowy fork.
+extern "C" int bbgpu_video_active(void)
+{
+    std::scoped_lock lock{BbAvPlayer::active_mutex};
+    return BbAvPlayer::active_player != nullptr && BbAvPlayer::active_player->IsActive() ? 1 : 0;
+}
+
+extern "C" int bbgpu_video_skip(void)
+{
+    std::scoped_lock lock{BbAvPlayer::active_mutex};
+    if (BbAvPlayer::active_player == nullptr || BbAvPlayer::active_player->IsActive() == false)
+    {
+        return 0;
+    }
+    LOG_INFO(Lib_AvPlayer, "video skipped by the player");
+    return BbAvPlayer::active_player->Stop() ? 1 : 0;
+}

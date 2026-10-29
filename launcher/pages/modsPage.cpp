@@ -33,7 +33,9 @@ ModsPage::ModsPage(const LauncherSettings& settings, const PortIni&, QWidget* pa
 {
     m_modsGroup = new SettingsGroup(tr("Mods"), tr("Extract each mod into its own folder (with dvdroot_ps4, or chr/, "
                                                    "parts/, ... directly). When files collide, the mod lower in the "
-                                                   "list wins. Applied at start."));
+                                                   "list wins. Applied at start. When the set of mods changes, the saves "
+                                                   "are copied first into savedata-backups next to them (the newest 5 "
+                                                   "copies are kept): a save loaded without a mod loses that mod's items."));
     m_modsEnabledRow = new SwitchRow(tr("Load mods"), {}, settings.modsEnabled);
     connect(m_modsEnabledRow, &SwitchRow::toggled, this, &ModsPage::changed);
     m_modsGroup->addRow(m_modsEnabledRow);

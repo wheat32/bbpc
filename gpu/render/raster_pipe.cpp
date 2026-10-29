@@ -1,8 +1,10 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport render: Rasterizer, the two-stage draw pipeline: stage A (GPU command thread) packs each draw
 // (dirty registers, user data, constants) and stage B (draw recording thread) records it.
 
 #include "render/raster_internal.h"
+#include "shim/bb_env.h"
 
 namespace Vulkan
 {
@@ -62,7 +64,7 @@ u32 VerifyInterval()
 {
     static const u32 interval = []
     {
-        const char* env = std::getenv("BB_PIPE_VERIFY");
+        const char* env = bb_env("BB_PIPE_VERIFY");
         return env != nullptr ? static_cast<u32>(std::strtoul(env, nullptr, 10)) : 0u;
     }();
     return interval;
@@ -71,14 +73,15 @@ u32 VerifyInterval()
 
 bool Rasterizer::DrawPipeWanted()
 {
-    const char* env = std::getenv("BB_DRAW_PIPE");
+    const char* env = bb_env("BB_DRAW_PIPE");
     if (env != nullptr && env[0])
     {
         return env[0] == '1';
     }
-    // Stage B spins while draws flow. Measured ahead with 16 threads (+19%) and with 4 cores /
-    // 8 threads (taskset, Steam Deck-like: +18%).
-    return BbThreads::Available() >= 8;
+    // Stage B spins while draws flow. Measured ahead with 16 threads (+19%), 4 cores / 8 threads
+    // (taskset, Steam Deck-like: +18%), 4 cores without SMT (+26%) and 2 cores / 4 threads (+11%)
+    // in a heavy scene (1500 draws a frame, 2026-10-21).
+    return BbThreads::Available() >= 4;
 }
 
 bool Rasterizer::UseDrawPipe() const
@@ -103,7 +106,7 @@ void Rasterizer::DrainDrawPipe(u32 reason, u32 line, const char* function)
     {
         return;
     }
-    static const bool stats = std::getenv("BB_FRAME_STATS") != nullptr;
+    static const bool stats = bb_env("BB_FRAME_STATS") != nullptr;
     if (stats == false)
     {
         draw_pipe->Drain(reason);
@@ -123,18 +126,6 @@ bool Rasterizer::IsGpuSideThread() const
     return OnStageA() || DrawPipe::OnStageB();
 }
 
-bool Rasterizer::IsGpuSideThreadId(u32 tid) const
-{
-    // The userfaultfd thread handles the fault while the faulting thread waits: without locks
-    // only if that thread owns the caches. The GPU command thread does not while the draw
-    // recording thread may be running, so its faults take the locked path of guest threads.
-    if (draw_pipe != nullptr)
-    {
-        return tid == draw_pipe->StageBThreadId();
-    }
-    return tid == liverpool->GetGpuCommandProcessorThreadId();
-}
-
 void Rasterizer::NotePendingGpuWrite(VAddr address, u64 size)
 {
     if (draw_pipe == nullptr || size == 0)
@@ -151,6 +142,32 @@ void Rasterizer::NotePendingRead(VAddr address, u64 size)
 {
     if (draw_pipe != nullptr && size && OnStageA())
     {
+        // BB_PENDING_STATS=1 (diagnostics): notes and granules a second, by level.
+        static const bool stats = bb_env("BB_PENDING_STATS") != nullptr;
+        if (stats)
+        {
+            static u64 notes[4]{}, granules[4]{};
+            static u32 printed = 0;
+            const u32 level = size <= PendingReads::LIMITS[0]   ? 0
+                              : size <= PendingReads::LIMITS[1] ? 1
+                              : size <= PendingReads::LIMITS[2] ? 2
+                                                                : 3;
+            ++notes[level];
+            granules[level] +=
+                ((address + size - 1) >> PendingReads::SHIFTS[level]) - (address >> PendingReads::SHIFTS[level]) + 1;
+            const u32 now = BbStats::coarse_second.load(std::memory_order_relaxed);
+            if (now - printed >= 10)
+            {
+                std::printf("Pending reads (10 s): notes/granules by level 0 %llu/%llu, 1 %llu/%llu, "
+                            "2 %llu/%llu, big %llu\n",
+                            (unsigned long long)notes[0], (unsigned long long)granules[0], (unsigned long long)notes[1],
+                            (unsigned long long)granules[1], (unsigned long long)notes[2],
+                            (unsigned long long)granules[2], (unsigned long long)notes[3]);
+                printed = now;
+                std::fill(std::begin(notes), std::end(notes), 0);
+                std::fill(std::begin(granules), std::end(granules), 0);
+            }
+        }
         pending_reads.Note(address, size, draw_pipe->NextPacket());
     }
 }
@@ -163,50 +180,8 @@ bool ConstRamPipe()
 {
     static const bool enabled = []
     {
-        const char* env = std::getenv("BB_CONSTRAM_PIPE");
+        const char* env = bb_env("BB_CONSTRAM_PIPE");
         return env == nullptr || env[0] != '0';
-    }();
-    return enabled;
-}
-
-/// BB_CONSTRAM_WINDOWS=0: the reads around the dumps are looked up in the hashed tables only
-/// (PendingReads), where reads elsewhere sharing their slots made dumps wait for the GPU.
-bool ConstRamWindows()
-{
-    static const bool enabled = []
-    {
-        const char* env = std::getenv("BB_CONSTRAM_WINDOWS");
-        return env == nullptr || env[0] != '0';
-    }();
-    return enabled;
-}
-
-/// With the game's memory in place the draw reads these bytes when the GPU runs it, not when the
-/// recording thread binds them (a copy then, with the old model): a dump while it is still queued
-/// on the GPU gave it the next draw's data. Single frames showed another pass's quad: the finished
-/// picture in the top-left quarter, black around it, or the scene shifted by half the frame,
-/// bright around it (upstream docs/Flicker_video_2026-10-17.ru.md). Rare: ~1 of 1000 dumps.
-/// BB_CONSTRAM_GPU_WAIT=0: not waited.
-bool ConstRamGpuWait()
-{
-    static const bool enabled = []
-    {
-        const char* env = std::getenv("BB_CONSTRAM_GPU_WAIT");
-        return VideoCore::GuestInPlace() && (env != nullptr && env[0] == '0') == false;
-    }();
-    return enabled;
-}
-
-/// BB_CONSTRAM_TASK_GPU=1: a dump after a task reading guest memory (the end of a submission)
-/// waits for the GPU to have run the task as well, as before; the task reads on the recording
-/// thread, and what it hands the GPU that writes the game's memory has its own wait
-/// (WaitForSubmissionWrites).
-bool TaskReadsOnGpu()
-{
-    static const bool enabled = []
-    {
-        const char* env = std::getenv("BB_CONSTRAM_TASK_GPU");
-        return env != nullptr && env[0] == '1';
     }();
     return enabled;
 }
@@ -222,7 +197,7 @@ void Rasterizer::WaitForPendingReads(VAddr address, u64 size)
     // 2: stage B catches up and submits, no GPU wait; 3: waits for the GPU only (work submitted).
     static const int finish_all = []
     {
-        const char* env = std::getenv("BB_EXP_CONSTRAM_FINISH");
+        const char* env = bb_env("BB_EXP_CONSTRAM_FINISH");
         return env != nullptr ? std::atoi(env) : 0;
     }();
     if (finish_all == 1)
@@ -256,11 +231,6 @@ void Rasterizer::WaitForPendingReads(VAddr address, u64 size)
         const u64 submitted = semaphore->CurrentTick() - 1; // the last tick sent
         semaphore->Wait(submitted);
     }
-    if (size != 0 && ConstRamWindows())
-    {
-        pending_resolve.OpenWindow(address, size, draw_pipe->NextPacket());
-        pending_reads.OpenWindow(address, size, draw_pipe->NextPacket());
-    }
     // Stage 2: the resolve workers copy (or note as read in place) the constants of the packets
     // reading these bytes before the dump replaces them.
     if (size != 0 && draw_pipe->ResolverCount() != 0)
@@ -271,10 +241,18 @@ void Rasterizer::WaitForPendingReads(VAddr address, u64 size)
             draw_pipe->WaitResolved(resolving);
         }
     }
-    // What the GPU may still read in place; the recording thread must also have run the tasks
-    // reading guest memory there.
-    const u64 reads = size == 0 ? 0 : std::max(untracked_reads_packet, pending_reads.Newest(address, size));
-    const u64 packet = size == 0 ? 0 : std::max(reads, task_reads_packet);
+    // Read by the GPU in place (wait for the GPU to have run it) and read on the recording thread
+    // (wait for that thread only). BB_EXP_CPU_READS_GPU_WAIT=1: both waited for the GPU (before).
+    static const bool cpu_reads_gpu_wait = bb_env("BB_EXP_CPU_READS_GPU_WAIT") != nullptr;
+    // With the draw pipe the GPU is waited for only over what stage B bound in place (it has
+    // run the reading packets by now: waited for above); BB_EXP_NOTED_GPU_WAIT=1 waits over
+    // every read noted on stage A, copies too (before).
+    static const bool noted_gpu_wait = bb_env("BB_EXP_NOTED_GPU_WAIT") != nullptr;
+    const bool stage_b_known = ConstRamPipe() && UseDrawPipe() && noted_gpu_wait == false;
+    // Stage B first: every packet that reads these bytes (noted on stage A) has run, and has
+    // noted what it bound in place (gpu_reads) by then.
+    const u64 noted = size == 0 ? 0 : pending_reads.Newest(address, size);
+    const u64 packet = size == 0 ? 0 : std::max({untracked_reads_packet, noted, untracked_cpu_reads_packet});
     if (ConstRamPipe() == false || UseDrawPipe() == false || size == 0)
     {
         DrainDrawPipe(DrawPipe::ReasonConstRam);
@@ -287,8 +265,27 @@ void Rasterizer::WaitForPendingReads(VAddr address, u64 size)
     {
         draw_pipe->WaitForPacket(packet, DrawPipe::ReasonConstRam);
     }
-    WaitForInPlaceReads(reads);
-    WaitForSubmissionWrites();
+    const u64 gpu_packet = size == 0
+                               ? 0
+                               : std::max(untracked_reads_packet,
+                                          stage_b_known ? std::min(noted, gpu_reads.Newest(address, size)) : noted);
+    const u64 gpu_waits_before = constram_gpu_waits;
+    WaitForInPlaceReads(cpu_reads_gpu_wait ? packet : gpu_packet);
+    // BB_CONSTRAM_WAIT_LOG=1 (diagnostics): dumps that waited for the GPU, sampled.
+    static const bool wait_log = bb_env("BB_CONSTRAM_WAIT_LOG") != nullptr;
+    if (wait_log && constram_gpu_waits != gpu_waits_before)
+    {
+        static u32 logged = 0;
+        if (logged++ < 400)
+        {
+            std::printf("ConstRam GPU wait: dump %#llx+%llu, newest reading packet %llu (untracked %llu, "
+                        "noted %llu, cpu %llu)\n",
+                        (unsigned long long)address, (unsigned long long)size, (unsigned long long)packet,
+                        (unsigned long long)untracked_reads_packet,
+                        (unsigned long long)pending_reads.Newest(address, size),
+                        (unsigned long long)untracked_cpu_reads_packet);
+        }
+    }
     if (InPlaceReads::Enabled() && size != 0)
     {
         Semaphore* semaphore = scheduler.GetWorkSemaphore();
@@ -332,7 +329,14 @@ void Rasterizer::WaitForPendingReads(VAddr address, u64 size)
 
 void Rasterizer::WaitForInPlaceReads(u64 packet)
 {
-    if (ConstRamGpuWait() == false || packet == 0)
+    // With the game's memory in place the draw reads these bytes when the GPU runs it, not when
+    // the recording thread binds them (a copy then, with the old model): a dump while it is still
+    // queued on the GPU gave it the next draw's data. Single frames showed another pass's quad:
+    // the finished picture in the top-left quarter, black around it, or the scene shifted by half
+    // the frame, bright around it (upstream docs/Flicker_video_2026-10-17.ru.md). Rare: ~1 of 1000 dumps.
+    // BB_CONSTRAM_GPU_WAIT=0: not waited.
+    static const bool enabled = bb_env_off("BB_CONSTRAM_GPU_WAIT") == 0;
+    if (enabled == false || packet == 0)
     {
         return;
     }
@@ -341,22 +345,7 @@ void Rasterizer::WaitForInPlaceReads(u64 packet)
     {
         return; // older than the table: long run
     }
-    WaitForGpuTick(entry.tick.load(std::memory_order_relaxed));
-}
-
-void Rasterizer::WaitForSubmissionWrites()
-{
-    // Read after the recording thread ran the submission's end (WaitForPendingReads).
-    const u64 tick = submission_writes_tick.load(std::memory_order_acquire);
-    if (ConstRamGpuWait() == false || tick == 0)
-    {
-        return;
-    }
-    WaitForGpuTick(tick);
-}
-
-void Rasterizer::WaitForGpuTick(u64 tick)
-{
+    const u64 tick = entry.tick.load(std::memory_order_relaxed);
     Semaphore* semaphore = scheduler.GetWorkSemaphore();
     if (semaphore->IsFree(tick))
     {
@@ -394,7 +383,7 @@ void Rasterizer::WaitForGpuTick(u64 tick)
 void Rasterizer::NoteCommandWriteInOrder(VAddr addr, const void* data, u64 size)
 {
     const bool enabled = ConstRamPipe();
-    if (VideoCore::WriteTracking() || IsMapped(addr, size) == false)
+    if (IsMapped(addr, size) == false)
     {
         return;
     }
@@ -431,8 +420,109 @@ bool Rasterizer::PendingWriteOverlaps(VAddr address, u64 size)
     {
         return false;
     }
-    const u64 packet = pending_write_table.Newest(address, size);
+    const u64 packet = pending_write_table.Newest(address, size, draw_pipe->ConsumedPackets());
     return packet != 0 && draw_pipe->ReachedPacket(packet) == false;
+}
+
+namespace
+{
+/// Whether any of CollectRingBindings' diagnostics is asked for (TraceRingBinding).
+bool RingTraceOn()
+{
+    static const bool on = bb_env("BB_TRACE_CB") != nullptr || bb_env("BB_TRACE_CB_RANGE") != nullptr ||
+                           bb_env("BB_TRACE_CB_LIST") != nullptr || bb_env("BB_RING_REASONS") != nullptr;
+    return on;
+}
+/// Constants already in the ring with the same bytes are bound there again instead of copied over
+/// the bus once more (on by default since 2026-10-28: +0.7 % AMD, with the copy filter +2.5 %
+/// RTX 5060; BB_RING_DEDUP=0 off). Experiment bit 8192 inverts it while the game runs (A/B).
+bool RingDedupOn()
+{
+    static const bool on = bb_env_off("BB_RING_DEDUP") == 0;
+    return on != BbToggle::Experiment(8192);
+}
+} // namespace
+
+bool Rasterizer::CopyRingDeduplicated(u32 index, VAddr address, u64 size, u64 alignment,
+                                      boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>& out)
+{
+    // The last copy of each (address, size), direct-mapped; hashed with 128 bits (equal bytes).
+    struct Slot
+    {
+        VAddr address = 0;
+        u64 size = 0;
+        XXH128_hash_t hash{};
+        u64 at = 0; ///< monotonic ring position
+    };
+    // On the heap: static TLS is reserved on every thread's stack.
+    thread_local auto slots = std::make_unique<std::array<Slot, 8192>>();
+    thread_local auto bytes = std::make_unique<std::array<u8, VideoCore::BufferCache::STREAM_THRESHOLD>>();
+    thread_local u64 hits = 0, misses = 0, saved = 0, full = 0;
+    thread_local u32 printed = 0;
+    if (size > bytes->size())
+    {
+        return false;
+    }
+    BB_SECTION(ARingCopy);
+    memory->CopySparseMemory(address, bytes->data(), size);
+    const XXH128_hash_t hash = XXH3_128bits(bytes->data(), size);
+    auto& slot = (*slots)[((address * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full)) >> 51];
+    // The same bytes copied for another address (equal constants of other objects): by content.
+    thread_local auto by_content = std::make_unique<std::array<Slot, 8192>>();
+    auto& content_slot = (*by_content)[hash.low64 >> 51];
+    std::optional<u64> offset;
+    if (slot.address == address && slot.size == size && XXH128_isEqual(slot.hash, hash))
+    {
+        offset = constant_ring->Reuse(slot.at, size);
+    }
+    if (!offset && content_slot.size == size && XXH128_isEqual(content_slot.hash, hash))
+    {
+        offset = constant_ring->Reuse(content_slot.at, size);
+        if (offset)
+        {
+            slot = content_slot;
+            slot.address = address;
+        }
+    }
+    if (offset)
+    {
+        ++hits;
+        saved += size;
+    }
+    else
+    {
+        offset = constant_ring->Allocate(size, alignment);
+        if (!offset)
+        {
+            ++full;
+            return false;
+        }
+        std::memcpy(constant_ring->Data(*offset), bytes->data(), size);
+        constant_ring->Flush(*offset, size);
+        slot = {address, size, hash, constant_ring->LastAllocated()};
+        content_slot = slot;
+        ++misses;
+    }
+    if (BbSections::Enabled())
+    {
+        BbSections::ring_copies.fetch_add(1, std::memory_order_relaxed);
+        BbSections::ring_bytes.fetch_add(size, std::memory_order_relaxed);
+    }
+    const u32 now = BbStats::coarse_second.load(std::memory_order_relaxed);
+    if (now - printed >= 5)
+    {
+        if (printed != 0)
+        {
+            std::printf("Ring dedup (5 s): %llu reused, %llu copied, %llu ring full, %.1f MB/s not "
+                        "written\n",
+                        (unsigned long long)hits, (unsigned long long)misses, (unsigned long long)full,
+                        double(saved) / 5e6);
+        }
+        printed = now;
+        hits = misses = saved = full = 0;
+    }
+    out.push_back({index, static_cast<u32>(size), *offset, address, 0, 0});
+    return true;
 }
 
 void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDraw* prepared,
@@ -456,6 +546,10 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
     const u64 alignment = std::max<u64>(instance.StorageMinAlignment(), instance.UniformMinAlignment());
     const auto copy = [&](u32 index, const void* source, VAddr address, u64 size)
     {
+        if (source == nullptr && address != 0 && RingDedupOn())
+        {
+            return CopyRingDeduplicated(index, address, size, alignment, out);
+        }
         const auto offset = constant_ring->Allocate(size, alignment);
         if (offset == std::nullopt)
         {
@@ -568,118 +662,168 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             BB_SECTION(ARingNote);
             NotePendingRead(address, size);
         }
-        // BB_TRACE_CB=hash (diagnostics): how that shader's constant buffers were bound.
-        static const u64 traced_cb = []
+        // Diagnostics (BB_TRACE_CB*, BB_RING_REASONS): out of the loop's way when none is set.
+        if (RingTraceOn())
         {
-            const char* env = std::getenv("BB_TRACE_CB");
-            return env != nullptr ? (std::strcmp(env, "all") == 0 ? ~0ull : std::strtoull(env, nullptr, 16)) : 0ull;
-        }();
-        if (traced_cb == ~0ull && copied == false && size <= VideoCore::BufferCache::STREAM_THRESHOLD)
-        {
-            static std::mutex trace_mutex;
-            static std::map<std::pair<u64, u32>, u64> in_place;
-            static u64 last_frame = 0;
-            std::scoped_lock lock{trace_mutex};
-            const u32 why = buffer_cache.IsRegionGpuModified(address, size)        ? 1
-                            : PendingWriteOverlaps(address, size)                  ? 2
-                            : VideoCore::BufferCache::LayerMirrored(address, size) ? 3
-                                                                                   : 4;
-            ++in_place[{stage.pgm_hash, why}];
-            const u64 frame = BbStats::frame_number.load(std::memory_order_relaxed);
-            if (frame >= last_frame + 600)
-            {
-                last_frame = frame;
-                std::printf("Trace cb: frame %llu small constants in place (hash why count):",
-                            (unsigned long long)frame);
-                for (const auto& [key, count] : in_place)
-                {
-                    std::printf(" %llx/%u/%llu", (unsigned long long)key.first, key.second, (unsigned long long)count);
-                }
-                std::printf("\n");
-                in_place.clear();
+            [[unlikely]] {
+                TraceRingBinding(stage, index, address, size, copied, copyable, constants_in_place, hle_candidate);
             }
         }
-        // BB_TRACE_CB_LIST=hash,hash (diagnostics): their constants against the same draw's last frame.
-        static const std::vector<u64> traced_list = []
+    }
+}
+
+/// CollectRingBindings' diagnostics for one buffer binding: BB_TRACE_CB=hash|all (how a shader's
+/// constant buffers were bound), BB_TRACE_CB_RANGE=lo-hi, BB_TRACE_CB_LIST=hash,hash (their
+/// values against the last frame), BB_RING_REASONS=1 (why small read-only bindings were not
+/// copied).
+[[gnu::cold]] void Rasterizer::TraceRingBinding(const Shader::Info& stage, u32 index, VAddr address, u64 size,
+                                                bool copied, bool copyable, bool constants_in_place, bool hle_candidate)
+{
+    // BB_TRACE_CB=hash (diagnostics): how that shader's constant buffers were bound.
+    static const u64 traced_cb = []
+    {
+        const char* env = bb_env("BB_TRACE_CB");
+        return env != nullptr ? (std::strcmp(env, "all") == 0 ? ~0ull : std::strtoull(env, nullptr, 16)) : 0ull;
+    }();
+    // BB_TRACE_CB_RANGE=lo-hi (hex, diagnostics): why constants in that range were read in place.
+    static const std::pair<u64, u64> traced_range = []
+    {
+        const char* env = bb_env("BB_TRACE_CB_RANGE");
+        if (env == nullptr)
         {
-            std::vector<u64> hashes;
-            const char* env = std::getenv("BB_TRACE_CB_LIST");
-            if (env != nullptr)
-            {
-                for (const char* at = env; *at;)
-                {
-                    char* end = nullptr;
-                    hashes.push_back(std::strtoull(at, &end, 16));
-                    at = *end ? end + 1 : end;
-                }
-            }
-            return hashes;
-        }();
-        const bool listed = std::ranges::find(traced_list, stage.pgm_hash) != traced_list.end();
-        if ((traced_cb && stage.pgm_hash == traced_cb) || listed)
-        {
-            static std::map<std::tuple<u64, u32, u32>, std::vector<u32>> history;
-            static std::map<std::pair<u64, u32>, u32> nth;
-            static u64 nth_frame = 0;
-            const u64 gpu_frame = BbStats::gpu_frames.load(std::memory_order_relaxed);
-            if (gpu_frame != nth_frame)
-            {
-                nth_frame = gpu_frame;
-                nth.clear();
-            }
-            const u32 ordinal = nth[{stage.pgm_hash, index}]++;
-            auto& previous = history[{stage.pgm_hash, index, ordinal}];
-            std::vector<u32> now(size / 4);
-            std::memcpy(now.data(), reinterpret_cast<const void*>(address), now.size() * 4);
-            std::string changes;
-            u32 changed = 0;
-            for (size_t i = 0; i < now.size() && i < previous.size(); ++i)
-            {
-                if (now[i] != previous[i] && changed++ < 24)
-                {
-                    changes += fmt::format(" [{}] {:x}({:g})->{:x}({:g})", i, previous[i],
-                                           std::bit_cast<float>(previous[i]), now[i], std::bit_cast<float>(now[i]));
-                }
-            }
-            std::printf("Trace cb values: gpu frame %llu %llx#%u slot %u %#llx %s changed %u:%s\n",
-                        (unsigned long long)gpu_frame, (unsigned long long)stage.pgm_hash, ordinal, index,
-                        (unsigned long long)address, copied ? "copied" : "in place", changed, changes.c_str());
-            previous = std::move(now);
-            std::printf("Trace cb: frame %llu %016llx slot %u %#llx+%llu %s gpu-mod %d pending-write %d "
-                        "mirrored %d packet %llu\n",
-                        (unsigned long long)BbStats::frame_number.load(std::memory_order_relaxed),
-                        (unsigned long long)stage.pgm_hash, index, (unsigned long long)address,
-                        (unsigned long long)size, copied ? "copied" : "IN PLACE",
-                        int(buffer_cache.IsRegionGpuModified(address, size)), int(PendingWriteOverlaps(address, size)),
-                        int(VideoCore::BufferCache::LayerMirrored(address, size)),
-                        (unsigned long long)(draw_pipe != nullptr ? draw_pipe->NextPacket() : 0));
+            return std::pair<u64, u64>{0, 0};
         }
-        // BB_RING_REASONS=1 (diagnostics): why small read-only bindings were not copied, per 5 s.
-        static const bool reasons = std::getenv("BB_RING_REASONS") != nullptr;
-        if (reasons && copyable == false && size != 0 && size <= VideoCore::BufferCache::STREAM_THRESHOLD)
+        char* end = nullptr;
+        const u64 lo = std::strtoull(env, &end, 16);
+        return std::pair<u64, u64>{lo, *end ? std::strtoull(end + 1, nullptr, 16) : 0};
+    }();
+    if (traced_range.second && address >= traced_range.first && address < traced_range.second)
+    {
+        static std::atomic<u64> counts[8]{};
+        static std::atomic<u64> total{0};
+        const u32 why = copied              ? 0
+                        : copyable == false ? (buffer_cache.IsRegionGpuModified(address, size)
+                                                   ? 4 + buffer_cache.GpuModifiedWhy(address, size)
+                                               : PendingWriteOverlaps(address, size)                  ? 2
+                                               : VideoCore::BufferCache::LayerMirrored(address, size) ? 3
+                                                                                                      : 1)
+                        : hle_candidate     ? 1
+                                            : 1;
+        ++counts[std::min<u32>(why, 7)];
+        if (++total % 500 == 0)
         {
-            static std::array<std::atomic<u64>, 5> counts{};
-            static u32 samples = 0;
-            static std::atomic<u64> total{0};
-            static auto last = std::chrono::steady_clock::now();
-            ++counts[constants_in_place ? 0
-                     : buffer_cache.IsRegionGpuModified(address, size)
-                         ? (samples++ < 300 && std::printf("Ring GPU-modified sample %#llx+%llu\n",
-                                                           (unsigned long long)address, (unsigned long long)size),
-                            1)
-                     : PendingWriteOverlaps(address, size)                  ? 2
-                     : VideoCore::BufferCache::LayerMirrored(address, size) ? 3
-                                                                            : 4];
-            ++total;
-            if (std::chrono::steady_clock::now() - last > std::chrono::seconds(5))
+            std::printf("Trace cb range: copied %llu, other %llu, pending write %llu, mirrored %llu, "
+                        "gpu-mod tracker %llu / vram %llu / pending %llu\n",
+                        (unsigned long long)counts[0].load(), (unsigned long long)counts[1].load(),
+                        (unsigned long long)counts[2].load(), (unsigned long long)counts[3].load(),
+                        (unsigned long long)counts[5].load(), (unsigned long long)counts[6].load(),
+                        (unsigned long long)counts[7].load());
+        }
+    }
+    if (traced_cb == ~0ull && copied == false && size <= VideoCore::BufferCache::STREAM_THRESHOLD)
+    {
+        static std::mutex trace_mutex;
+        static std::map<std::pair<u64, u32>, u64> in_place;
+        static u64 last_frame = 0;
+        std::scoped_lock lock{trace_mutex};
+        const u32 why = buffer_cache.IsRegionGpuModified(address, size)
+                            ? 10 + buffer_cache.GpuModifiedWhy(address, size)
+                        : PendingWriteOverlaps(address, size)                  ? 2
+                        : VideoCore::BufferCache::LayerMirrored(address, size) ? 3
+                                                                               : 4;
+        ++in_place[{stage.pgm_hash, why}];
+        const u64 frame = BbStats::frame_number.load(std::memory_order_relaxed);
+        if (frame >= last_frame + 600)
+        {
+            last_frame = frame;
+            std::printf("Trace cb: frame %llu small constants in place (hash why count):", (unsigned long long)frame);
+            for (const auto& [key, count] : in_place)
             {
-                last = std::chrono::steady_clock::now();
-                std::printf("Ring reasons (5 s): in place %llu, GPU-modified %llu, pending GPU write %llu, "
-                            "mirrored %llu, other %llu\n",
-                            (unsigned long long)counts[0].exchange(0), (unsigned long long)counts[1].exchange(0),
-                            (unsigned long long)counts[2].exchange(0), (unsigned long long)counts[3].exchange(0),
-                            (unsigned long long)counts[4].exchange(0));
+                std::printf(" %llx/%u/%llu", (unsigned long long)key.first, key.second, (unsigned long long)count);
             }
+            std::printf("\n");
+            in_place.clear();
+        }
+    }
+    // BB_TRACE_CB_LIST=hash,hash (diagnostics): their constants against the same draw's last frame.
+    static const std::vector<u64> traced_list = []
+    {
+        std::vector<u64> hashes;
+        const char* env = bb_env("BB_TRACE_CB_LIST");
+        if (env != nullptr)
+        {
+            for (const char* at = env; *at;)
+            {
+                char* end = nullptr;
+                hashes.push_back(std::strtoull(at, &end, 16));
+                at = *end ? end + 1 : end;
+            }
+        }
+        return hashes;
+    }();
+    const bool listed = std::ranges::find(traced_list, stage.pgm_hash) != traced_list.end();
+    if ((traced_cb && stage.pgm_hash == traced_cb) || listed)
+    {
+        static std::map<std::tuple<u64, u32, u32>, std::vector<u32>> history;
+        static std::map<std::pair<u64, u32>, u32> nth;
+        static u64 nth_frame = 0;
+        const u64 gpu_frame = BbStats::gpu_frames.load(std::memory_order_relaxed);
+        if (gpu_frame != nth_frame)
+        {
+            nth_frame = gpu_frame;
+            nth.clear();
+        }
+        const u32 ordinal = nth[{stage.pgm_hash, index}]++;
+        auto& previous = history[{stage.pgm_hash, index, ordinal}];
+        std::vector<u32> now(size / 4);
+        std::memcpy(now.data(), reinterpret_cast<const void*>(address), now.size() * 4);
+        std::string changes;
+        u32 changed = 0;
+        for (size_t i = 0; i < now.size() && i < previous.size(); ++i)
+        {
+            if (now[i] != previous[i] && changed++ < 24)
+            {
+                changes += fmt::format(" [{}] {:x}({:g})->{:x}({:g})", i, previous[i],
+                                       std::bit_cast<float>(previous[i]), now[i], std::bit_cast<float>(now[i]));
+            }
+        }
+        std::printf("Trace cb values: gpu frame %llu %llx#%u slot %u %#llx %s changed %u:%s\n",
+                    (unsigned long long)gpu_frame, (unsigned long long)stage.pgm_hash, ordinal, index,
+                    (unsigned long long)address, copied ? "copied" : "in place", changed, changes.c_str());
+        previous = std::move(now);
+        std::printf("Trace cb: frame %llu %016llx slot %u %#llx+%llu %s gpu-mod %d pending-write %d "
+                    "mirrored %d packet %llu\n",
+                    (unsigned long long)BbStats::frame_number.load(std::memory_order_relaxed),
+                    (unsigned long long)stage.pgm_hash, index, (unsigned long long)address, (unsigned long long)size,
+                    copied ? "copied" : "IN PLACE", int(buffer_cache.IsRegionGpuModified(address, size)),
+                    int(PendingWriteOverlaps(address, size)), int(VideoCore::BufferCache::LayerMirrored(address, size)),
+                    (unsigned long long)(draw_pipe ? draw_pipe->NextPacket() : 0));
+    }
+    // BB_RING_REASONS=1 (diagnostics): why small read-only bindings were not copied, per 5 s.
+    static const bool reasons = bb_env("BB_RING_REASONS") != nullptr;
+    if (reasons && copyable == false && size != 0 && size <= VideoCore::BufferCache::STREAM_THRESHOLD)
+    {
+        static std::array<std::atomic<u64>, 5> counts{};
+        static u32 samples = 0;
+        static std::atomic<u64> total{0};
+        static auto last = std::chrono::steady_clock::now();
+        ++counts[constants_in_place ? 0
+                 : buffer_cache.IsRegionGpuModified(address, size)
+                     ? (samples++ < 300 && std::printf("Ring GPU-modified sample %#llx+%llu\n",
+                                                       (unsigned long long)address, (unsigned long long)size),
+                        1)
+                 : PendingWriteOverlaps(address, size)                  ? 2
+                 : VideoCore::BufferCache::LayerMirrored(address, size) ? 3
+                                                                        : 4];
+        ++total;
+        if (std::chrono::steady_clock::now() - last > std::chrono::seconds(5))
+        {
+            last = std::chrono::steady_clock::now();
+            std::printf("Ring reasons (5 s): in place %llu, GPU-modified %llu, pending GPU write %llu, "
+                        "mirrored %llu, other %llu\n",
+                        (unsigned long long)counts[0].exchange(0), (unsigned long long)counts[1].exchange(0),
+                        (unsigned long long)counts[2].exchange(0), (unsigned long long)counts[3].exchange(0),
+                        (unsigned long long)counts[4].exchange(0));
         }
     }
 }
@@ -693,6 +837,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     {
         // Stage B has not run yet: its register copy starts as this one.
         pipe_regs = liverpool->regs;
+        pipe_touched.all = true;
         dirty.Clear();
         pipe_synced = true;
     }
@@ -734,7 +879,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
             // the CPU: user data pointing into it, constants copied from it; printed every 2 s.
             static const std::pair<u64, u64> watch = []
             {
-                const char* env = std::getenv("BB_WATCH");
+                const char* env = bb_env("BB_WATCH");
                 if (env == nullptr)
                 {
                     return std::pair<u64, u64>{0, 0};
@@ -795,7 +940,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
             // BB_EXP_DMA_UNTRACKED=1 (experiment): a stage that reads the game's memory through
             // pointers when the GPU runs it (uses_dma) counts as reading memory it does not list:
             // a constant RAM dump waits for the GPU to have run it.
-            static const bool dma_untracked = std::getenv("BB_EXP_DMA_UNTRACKED") != nullptr;
+            static const bool dma_untracked = bb_env("BB_EXP_DMA_UNTRACKED") != nullptr;
             if (stage->uses_dma)
             {
                 static std::atomic<u64> dma_stages{0};
@@ -832,6 +977,11 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     if (cs != nullptr)
     {
         size += AlignPacket(sizeof(Gcn::ComputeProgram));
+        if (Game::BufferCopyShader() != 0 && stages.empty() == false && stages[0] != nullptr &&
+            stages[0]->pgm_hash == Game::BufferCopyShader())
+        {
+            PostCopyFilterJob(*stages[0], cs->dim_x);
+        }
     }
     if (indirect != nullptr)
     {
@@ -1000,13 +1150,9 @@ bool Rasterizer::RunInOrder(OrderedTask task, const void* data, u32 size, u64 to
         task(*this, static_cast<const u8*>(data));
         return false;
     }
-    if (reads_guest_memory && TaskReadsOnGpu())
+    if (reads_guest_memory)
     {
-        untracked_reads_packet = draw_pipe->NextPacket();
-    }
-    else if (reads_guest_memory)
-    {
-        task_reads_packet = draw_pipe->NextPacket();
+        untracked_cpu_reads_packet = draw_pipe->NextPacket();
     }
     const u32 total = sizeof(TaskPacket) + AlignPacket(size);
     u8* out = draw_pipe->Begin(total);
@@ -1041,6 +1187,7 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size)
             entry.packet.store(packet, std::memory_order_release);
         }
     } tick_note{self, self.draw_pipe->RunningPacket()};
+    self.stage_b_packet = self.draw_pipe->RunningPacket();
     if (*reinterpret_cast<const PacketKind*>(data) == PacketKind::Task)
     {
         BB_SECTION(Task);
@@ -1073,12 +1220,13 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size)
     Gcn::Regs& regs = self.pipe_regs;
     if (packet.regs_reset)
     {
-        regs.SetDefaults();
+        Gcn::ResetRegs(regs, self.pipe_touched);
     }
     for (u32 i = 0; i < packet.num_blocks; ++i)
     {
         std::memcpy(regs.reg_array.data() + blocks[i] * Gcn::RegDirty::BLOCK_WORDS, in,
                     Gcn::RegDirty::BLOCK_WORDS * sizeof(u32));
+        self.pipe_touched.marks.blocks.set(blocks[i]);
         in += Gcn::RegDirty::BLOCK_WORDS * sizeof(u32);
     }
     ASSERT(packet.num_stages <= Shader::Info::MAX_UD_SNAPSHOTS);
@@ -1295,7 +1443,7 @@ constexpr const char* NAMES[] = {"ConstRam", "commands", "compute", "submission 
 
 void Rasterizer::PrintPipeStats()
 {
-    static const bool stats = std::getenv("BB_FRAME_STATS") != nullptr;
+    static const bool stats = bb_env("BB_FRAME_STATS") != nullptr;
     if (stats == false || (draw_pipe->packets & 1023) != 0)
     {
         return;
@@ -1433,11 +1581,7 @@ std::atomic<u32> reported{0};
 
 bool Enabled()
 {
-    static const bool on = []
-    {
-        const char* env = std::getenv("BB_INPLACE_READ_CHECK");
-        return env != nullptr && env[0] == '1';
-    }();
+    static const bool on = bb_env_on("BB_INPLACE_READ_CHECK");
     return on;
 }
 

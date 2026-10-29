@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: FSR 4.1.1 replay on Vulkan (fsr411.h). The frame is the DLL's 29 dispatches: SPD auto
 // exposure, prepass, pass0_post, model passes 1..12 each followed by its _post pass (tensor border
@@ -7,6 +8,7 @@
 // and other group counts (Rules).
 
 #include "fsr411.h"
+#include "shim/bb_env.h"
 
 #include <algorithm>
 #include <array>
@@ -16,6 +18,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <string_view>
 #include <vector>
 
 namespace Fsr411
@@ -24,70 +27,122 @@ namespace Fsr411
 namespace
 {
 
-constexpr const char* PASSES[] = {
-    "spd",         "prepass", "pass0_post",  "pass1",    "pass1_post", "pass2",  "pass2_post",  "pass3",
-    "pass3_post",  "pass4",   "pass4_post",  "pass5",    "pass5_post", "pass6",  "pass6_post",  "pass7",
-    "pass7_post",  "pass8",   "pass8_post",  "pass9",    "pass9_post", "pass10", "pass10_post", "pass11",
-    "pass11_post", "pass12",  "pass12_post", "postpass", "rcas",
+/// What a pass does, for its group counts: SPD auto exposure, prepass, a tensor border clear
+/// (the _post passes), a model pass, postpass, RCAS.
+enum class Kind : uint8_t
+{
+    Spd,
+    Prepass,
+    Border,
+    Model,
+    Postpass,
+    Rcas
 };
-constexpr uint32_t PASS_COUNT = sizeof(PASSES) / sizeof(PASSES[0]);
-/// Tensor level (1/2^level of the aligned output) a model pass runs at, and of its _post pass.
-constexpr uint32_t RUN_LEVEL[13] = {1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 2, 2, 1};
-constexpr uint32_t POST_LEVEL[13] = {1, 1, 1, 2, 2, 2, 3, 3, 3, 2, 2, 1, 1};
+struct PassDesc
+{
+    const char* name; ///< its asset file (<name>.spv)
+    Kind kind;
+    uint8_t level;    ///< Border/Model: the tensor level (1/2^level of the aligned output)
+    uint32_t tile[2]; ///< Model: tensor elements per group; Prepass/Postpass: output pixels
+};
+/// The most passes of a model (FSR 4.1.1's 29 dispatches).
+constexpr uint32_t PASS_COUNT = 29;
 
-/// The group counts of a variant (extract.py VARIANTS): tensor elements per group of model pass k
-/// at its level, output pixels per group of the prepass and postpass, and the alignment of the
-/// tensors' width whose border the _post passes clear (up to align + 1 columns right of it).
+/// A model as the DLL dispatches it (extract.py VARIANTS and LITE): its passes, the alignment of
+/// the tensors' width whose border the _post passes clear (up to align + 1 columns right of it),
+/// the tensor size table (CsTensorSizes: shifts of the aligned output), the scratch buffer per
+/// tier and the weights' size.
 struct Rules
 {
     const char* name;
     const char* folder; ///< of its asset sets
-    uint32_t tile[13][2];
-    uint32_t prepass[2], postpass[2];
+    std::array<PassDesc, PASS_COUNT> passes;
+    uint32_t pass_count;
     uint32_t post_align;
+    std::array<uint8_t, 17> tensor_shift;
+    uint32_t scratch[2]; ///< bytes: t1080, t2160
+    uint32_t initializer_size;
 };
-constexpr Rules INT8{"INT8",
-                     "",
-                     {{0, 0},
-                      {64, 1},
-                      {64, 1},
-                      {64, 1},
-                      {64, 1},
-                      {64, 1},
-                      {64, 1},
-                      {64, 1},
-                      {64, 1},
-                      {64, 1},
-                      {64, 1},
-                      {64, 1},
-                      {64, 1}},
-                     {16, 16},
-                     {32, 32},
-                     4};
-constexpr Rules FP8{"FP8",
-                    "fp8/",
-                    {{0, 0},
-                     {16, 8},
-                     {16, 8},
-                     {32, 1},
-                     {16, 4},
-                     {16, 4},
-                     {32, 1},
-                     {16, 2},
-                     {16, 2},
-                     {16, 1},
-                     {16, 4},
-                     {16, 1},
-                     {16, 8}},
-                    {64, 2},
-                    {64, 2},
-                    32};
+
+/// A tensor size table entry the model does not have (left 0).
+constexpr uint8_t NO_TENSOR = 0xff;
+
+/// FSR 4.1.1's model (the DLL's 29 dispatches): SPD, prepass, pass0_post, model passes 1..12 each
+/// followed by its _post pass, postpass, RCAS; `tile` per model pass.
+constexpr Rules FullModel(const char* name, const char* folder, const uint32_t (&tile)[13][2],
+                          const uint32_t (&prepass)[2], const uint32_t (&postpass)[2], uint32_t post_align)
+{
+    constexpr const char* MODEL[13] = {"",      "pass1", "pass2", "pass3",  "pass4",  "pass5", "pass6",
+                                       "pass7", "pass8", "pass9", "pass10", "pass11", "pass12"};
+    constexpr const char* POST[13] = {"pass0_post",  "pass1_post",  "pass2_post", "pass3_post", "pass4_post",
+                                      "pass5_post",  "pass6_post",  "pass7_post", "pass8_post", "pass9_post",
+                                      "pass10_post", "pass11_post", "pass12_post"};
+    constexpr uint8_t RUN_LEVEL[13] = {1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 2, 2, 1};
+    constexpr uint8_t POST_LEVEL[13] = {1, 1, 1, 2, 2, 2, 3, 3, 3, 2, 2, 1, 1};
+    Rules r{
+        name,  folder, {}, 0, post_align, {1, 0, 1, 1, 2, 2, 2, 3, 3, 3, 2, 2, 1, 1, 0, 0, 0}, {20880256u, 83232256u},
+        131072};
+    r.passes[r.pass_count++] = {"spd", Kind::Spd, 0, {}};
+    r.passes[r.pass_count++] = {"prepass", Kind::Prepass, 0, {prepass[0], prepass[1]}};
+    r.passes[r.pass_count++] = {POST[0], Kind::Border, POST_LEVEL[0], {}};
+    for (uint32_t k = 1; k <= 12; ++k)
+    {
+        r.passes[r.pass_count++] = {MODEL[k], Kind::Model, RUN_LEVEL[k], {tile[k][0], tile[k][1]}};
+        r.passes[r.pass_count++] = {POST[k], Kind::Border, POST_LEVEL[k], {}};
+    }
+    r.passes[r.pass_count++] = {"postpass", Kind::Postpass, 0, {postpass[0], postpass[1]}};
+    r.passes[r.pass_count++] = {"rcas", Kind::Rcas, 0, {}};
+    return r;
+}
+
+constexpr uint32_t INT8_TILES[13][2] = {{0, 0},  {64, 1}, {64, 1}, {64, 1}, {64, 1}, {64, 1}, {64, 1},
+                                        {64, 1}, {64, 1}, {64, 1}, {64, 1}, {64, 1}, {64, 1}};
+constexpr Rules INT8 = FullModel("INT8", "", INT8_TILES, {16, 16}, {32, 32}, 4);
+constexpr uint32_t FP8_TILES[13][2] = {{0, 0},  {16, 8}, {16, 8}, {32, 1}, {16, 4}, {16, 4}, {32, 1},
+                                       {16, 2}, {16, 2}, {16, 1}, {16, 4}, {16, 1}, {16, 8}};
+constexpr Rules FP8 = FullModel("FP8", "fp8/", FP8_TILES, {64, 2}, {64, 2}, 32);
 /// The FP8 passes with FP8 emulated through FP16 matrices, as vkd3d-proton runs them on RDNA3.
 constexpr Rules FP8_EMULATED = []
 {
     Rules r = FP8;
     r.name = "FP8 (emulated)";
     r.folder = "fp8emu/";
+    return r;
+}();
+/// FSR 4.1.2's INT8 model for RDNA2 (AMD's driver DLL, ffxProvider_FSR4_Int8_Navi2): the INT8
+/// passes and weights, its own shaders, pass11 in 8x4 tiles.
+constexpr uint32_t NAVI2_TILES[13][2] = {{0, 0},  {64, 1}, {64, 1}, {64, 1}, {64, 1}, {64, 1}, {64, 1},
+                                         {64, 1}, {64, 1}, {64, 1}, {64, 1}, {8, 4},  {64, 1}};
+constexpr Rules NAVI2 = FullModel("INT8 (RDNA2)", "navi2/", NAVI2_TILES, {16, 16}, {32, 32}, 4);
+/// FSR 4.1.2's small INT8 model (ffxProvider_FSR4Lite_Int8; AMD's driver gives it to the Steam
+/// Deck's and RDNA 3.5 APUs): 12 dispatches, three model passes at 1/2 and 1/4 of the output,
+/// its own weights (27392 bytes). pass1 has two border clears (pass1_postb: the
+/// second, at 1/4). Nine tensors in the size table.
+constexpr Rules LITE = []
+{
+    Rules r{"INT8 Lite", "lite/", {}, 0, 4, {1, 0, 1, 2, 2, 1, 0, 0, 0}, {25027392u, 99820992u}, 27392};
+    for (uint32_t i = 9; i < r.tensor_shift.size(); ++i)
+    {
+        r.tensor_shift[i] = NO_TENSOR;
+    }
+    const PassDesc passes[] = {
+        {"spd", Kind::Spd, 0, {}},
+        {"prepass", Kind::Prepass, 0, {16, 16}},
+        {"pass0_post", Kind::Border, 1, {}},
+        {"pass1", Kind::Model, 1, {32, 4}},
+        {"pass1_post", Kind::Border, 1, {}},
+        {"pass1_postb", Kind::Border, 2, {}},
+        {"pass2", Kind::Model, 2, {64, 1}},
+        {"pass2_post", Kind::Border, 2, {}},
+        {"pass3", Kind::Model, 2, {64, 1}},
+        {"pass3_post", Kind::Border, 1, {}},
+        {"postpass", Kind::Postpass, 0, {32, 32}},
+        {"rcas", Kind::Rcas, 0, {}},
+    };
+    for (const PassDesc& p : passes)
+    {
+        r.passes[r.pass_count++] = p;
+    }
     return r;
 }();
 
@@ -301,6 +356,66 @@ bool Reflect(const std::vector<uint32_t>& words, Reflection& out, std::string& e
 
 } // namespace
 
+bool Built(const std::string& dir, const Rules& r)
+{
+    return bool(std::ifstream(dir + "/" + r.folder + "t1080_m0/initializer.bin"));
+}
+
+/// The model's rules: BB_FSR411_VARIANT (int8, fp8, fp8emu, navi2, lite), else Features::model,
+/// else by the GPU; each only where its sets are built and the device runs it.
+const Rules* Choose(const std::string& dir, const Features& f)
+{
+    const char* env = bb_env("BB_FSR411_VARIANT");
+    std::string wanted = env != nullptr && *env ? env : f.model;
+    if (wanted == "int8_rdna2")
+    {
+        wanted = "navi2";
+    }
+    if (wanted == "int8_lite")
+    {
+        wanted = "lite";
+    }
+    const bool fp8 = f.fp8_matrices && Built(dir, FP8);
+    const bool fp8emu = f.fp16_matrices && Built(dir, FP8_EMULATED);
+    if (wanted == "fp8" && (fp8 || fp8emu))
+    {
+        return fp8 ? &FP8 : &FP8_EMULATED;
+    }
+    if (wanted == "fp8emu" && fp8emu)
+    {
+        return &FP8_EMULATED;
+    }
+    if (wanted == "navi2" && Built(dir, NAVI2))
+    {
+        return &NAVI2;
+    }
+    if (wanted == "lite" && Built(dir, LITE))
+    {
+        return &LITE;
+    }
+    if (wanted == "int8" && Built(dir, INT8))
+    {
+        return &INT8;
+    }
+    // Auto (or a model not built): FP8 with FP8 matrices, else INT8. (Not yet the 4.1.2 models as
+    // AMD's driver picks them: the Lite model drew garbage on a Steam Deck, 2026-10-23.)
+    if (fp8)
+    {
+        return &FP8;
+    }
+    if (Built(dir, INT8) == false)
+    {
+        for (const Rules* r : {&NAVI2, &LITE})
+        {
+            if (Built(dir, *r))
+            {
+                return r;
+            }
+        }
+    }
+    return &INT8;
+}
+
 // ---- implementation ---------------------------------------------------------------------------
 
 struct Upscaler::Impl
@@ -355,26 +470,18 @@ struct Upscaler::Impl
     std::array<std::array<uint8_t, PASS_COUNT>, FRAMES_IN_FLIGHT> profile_pass{};
     std::array<double, PASS_COUNT> profile_ms{};
     uint64_t profile_frames = 0;
+    /// The INT8 postpass with its stores through workgroup memory (postpass.spv, postpass_lds.py):
+    /// 2.3x faster on RDNA3, but 1.4x slower on RDNA2 (Steam Deck: 1.75 vs 1.24 ms at 1280x800),
+    /// which runs the original (postpass_orig.spv). RDNA3 and later have cooperative matrices.
+    /// BB_FSR411_POSTPASS=lds or orig picks one.
+    bool lds_postpass = true;
 
     Impl(VkPhysicalDevice p, VkDevice d, std::string dir_, Features features)
         : physical{p}, device{d}, dir{std::move(dir_)}
     {
-        // FP8 when the device runs it and its sets were built (on RDNA4: tools/fsr4cap records
-        // both variants there).
-        const auto built = [&](const Rules& r)
-        {
-            return bool(std::ifstream(dir + "/" + r.folder + "t1080_m0/initializer.bin"));
-        };
-        const char* env = std::getenv("BB_FSR411_VARIANT");
-        const std::string wanted = env != nullptr ? env : "";
-        if (wanted == "fp8emu" && features.fp16_matrices && built(FP8_EMULATED))
-        {
-            rules = &FP8_EMULATED;
-        }
-        else if (wanted != "int8" && features.fp8_matrices && built(FP8))
-        {
-            rules = &FP8;
-        }
+        const char* postpass = bb_env("BB_FSR411_POSTPASS");
+        lds_postpass = postpass != nullptr && *postpass ? std::string_view{postpass} != "orig" : features.fp16_matrices;
+        rules = Choose(dir, features);
         vkGetPhysicalDeviceMemoryProperties(physical, &memory);
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(physical, &props);
@@ -382,8 +489,7 @@ struct Upscaler::Impl
         push_descriptors =
             reinterpret_cast<PFN_vkCmdPushDescriptorSetKHR>(vkGetDeviceProcAddr(device, "vkCmdPushDescriptorSetKHR"));
         period_ns = props.limits.timestampPeriod;
-        const char* profile = std::getenv("BB_FSR4_PROFILE");
-        if (profile != nullptr && profile[0] == '1')
+        if (bb_env_on("BB_FSR4_PROFILE"))
         {
             VkQueryPoolCreateInfo qci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
             qci.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -427,7 +533,7 @@ struct Upscaler::Impl
         {
             if (profile_ms[p] > 0.0)
             {
-                std::printf("  %6.3f ms/frame  %s\n", profile_ms[p] / 300.0, PASSES[p]);
+                std::printf("  %6.3f ms/frame  %s\n", profile_ms[p] / 300.0, rules->passes[p].name);
             }
             profile_ms[p] = 0.0;
         }
@@ -609,7 +715,16 @@ struct Upscaler::Impl
     bool LoadPass(uint32_t index)
     {
         std::vector<uint8_t> bytes;
-        const std::string path = dir + "/" + rules->folder + set + "/" + PASSES[index] + ".spv";
+        const char* name = rules->passes[index].name;
+        std::string path = dir + "/" + rules->folder + set + "/" + name + ".spv";
+        if (lds_postpass == false && std::string_view{name} == "postpass")
+        {
+            const std::string orig = dir + "/" + rules->folder + set + "/postpass_orig.spv";
+            if (std::ifstream(orig))
+            {
+                path = orig;
+            }
+        }
         if (ReadFile(path, bytes) == false || bytes.size() % 4)
         {
             error = "missing " + path + " (tools/fsr4cap: capture and extract the FSR 4.1.1 assets)";
@@ -705,7 +820,7 @@ struct Upscaler::Impl
             error = "sampler creation failed";
             return false;
         }
-        for (uint32_t i = 0; i < PASS_COUNT; ++i)
+        for (uint32_t i = 0; i < rules->pass_count; ++i)
         {
             if (LoadPass(i) == false)
             {
@@ -713,12 +828,12 @@ struct Upscaler::Impl
             }
         }
         const std::string weights = dir + "/" + rules->folder + set + "/initializer.bin";
-        if (ReadFile(weights, initializer_data) == false || initializer_data.size() != 131072)
+        if (ReadFile(weights, initializer_data) == false || initializer_data.size() != rules->initializer_size)
         {
             error = "missing or wrong " + weights;
             return false;
         }
-        const VkDeviceSize scratch_size = tier2160 ? 83232256u : 20880256u;
+        const VkDeviceSize scratch_size = rules->scratch[tier2160 ? 1 : 0];
         if (MakeImage(recurrent, VK_FORMAT_R8G8B8A8_UNORM, ow, oh) == false ||
             MakeImage(history, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh) == false ||
             MakeImage(reprojected, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh) == false ||
@@ -729,9 +844,9 @@ struct Upscaler::Impl
             MakeImage(spd_mip5, VK_FORMAT_R32_SFLOAT, CeilDiv(ow, 16), CeilDiv(oh, 16)) == false ||
             MakeBuffer(scratch, scratch_size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                        false) == false ||
-            MakeBuffer(initializer, 131072, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                       false) == false ||
-            MakeBuffer(staging, 131072, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true) == false ||
+            MakeBuffer(initializer, rules->initializer_size,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false) == false ||
+            MakeBuffer(staging, rules->initializer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true) == false ||
             MakeBuffer(ubo, FRAMES_IN_FLIGHT * 4 * ubo_align, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true) == false ||
             MakeBuffer(tensor_ubo, 512, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true) == false)
         {
@@ -740,13 +855,16 @@ struct Upscaler::Impl
         std::memcpy(staging.mapped, initializer_data.data(), initializer_data.size());
         // Tensor sizes (17 x uint4): levels of the output aligned to 8.
         const uint32_t aw = (ow + 7) & ~7u, ah = (oh + 7) & ~7u;
-        static constexpr uint32_t SHIFT[17] = {1, 0, 1, 1, 2, 2, 2, 3, 3, 3, 2, 2, 1, 1, 0, 0, 0};
         uint32_t* sizes = static_cast<uint32_t*>(tensor_ubo.mapped);
         std::memset(sizes, 0, 512);
         for (uint32_t i = 0; i < 17; ++i)
         {
-            sizes[i * 4 + 0] = aw >> SHIFT[i];
-            sizes[i * 4 + 1] = ah >> SHIFT[i];
+            const uint8_t shift = rules->tensor_shift[i];
+            if (shift != NO_TENSOR)
+            {
+                sizes[i * 4 + 0] = aw >> shift;
+                sizes[i * 4 + 1] = ah >> shift;
+            }
         }
         ready = true;
         previous_pre_exposure = 0.0f;
@@ -779,7 +897,7 @@ struct Upscaler::Impl
         }
         vkCmdClearColorImage(cmd, exposure_identity.image, VK_IMAGE_LAYOUT_GENERAL, &one, 1, &range);
         vkCmdFillBuffer(cmd, scratch.buffer, 0, VK_WHOLE_SIZE, 0);
-        const VkBufferCopy copy{0, 0, 131072};
+        const VkBufferCopy copy{0, 0, rules->initializer_size};
         vkCmdCopyBuffer(cmd, staging.buffer, initializer.buffer, 1, &copy);
         VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
         mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -787,6 +905,11 @@ struct Upscaler::Impl
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0,
                              nullptr, 0, nullptr);
         uploaded = true;
+    }
+
+    static std::string SetName(bool ultra_performance, uint32_t ow, uint32_t oh)
+    {
+        return std::string(ow > 1920 || oh > 1080 ? "t2160" : "t1080") + (ultra_performance ? "_m1" : "_m0");
     }
 
     bool Record(const Frame& f)
@@ -928,9 +1051,10 @@ struct Upscaler::Impl
         between.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         between.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
         // Earlier work of the caller on the inputs (render, copies) is the caller's barrier.
-        for (uint32_t index = 0; index < PASS_COUNT; ++index)
+        for (uint32_t index = 0; index < rules->pass_count; ++index)
         {
-            const std::string name = PASSES[index];
+            const PassDesc& desc = rules->passes[index];
+            const std::string name = desc.name;
             if ((name == "spd" && f.auto_exposure == false) || (name == "rcas" && f.sharpen == false))
             {
                 continue;
@@ -1048,43 +1172,40 @@ struct Upscaler::Impl
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline);
             push_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout, 0, uint32_t(writes.size()), writes.data());
             uint32_t gx = 1, gy = 1;
-            if (name == "spd")
+            switch (desc.kind)
             {
-                gx = CeilDiv(rw, 64);
-                gy = CeilDiv(rh, 64);
-            }
-            else if (name == "rcas")
-            {
-                gx = CeilDiv(aw, 16);
-                gy = CeilDiv(ah, 16);
-            }
-            else if (name == "prepass" || name == "postpass")
-            {
-                const uint32_t* tile = name == "prepass" ? rules->prepass : rules->postpass;
-                gx = CeilDiv(aw, tile[0]);
-                gy = CeilDiv(ah, tile[1]);
-            }
-            else if (name.ends_with("_post"))
-            {
-                // Clears the border of a tensor: threads as the shader counts them (it stops the
-                // rest) from the tensor size and the tier's allocation (aligned).
-                const uint32_t k = name == "pass0_post" ? 0 : uint32_t(std::stoi(name.substr(4)));
-                const uint32_t level = POST_LEVEL[k];
-                const uint32_t w = aw >> level, h = ah >> level;
-                const uint32_t align = rules->post_align;
-                const uint32_t tw = ((tier2160 ? 3840u : 1920u) >> level) + align - 1;
-                const uint32_t th = (tier2160 ? 2160u : 1080u) >> level;
-                const uint32_t kx = std::min(tw / align * align + 1 - w, align + 1);
-                const uint32_t ky = std::min(th + 1 - h, 1u);
-                const uint32_t threads = (w + 1 + kx) + h + h * kx + (w + 1 + kx) * ky;
-                gx = CeilDiv(threads, p.refl.local_size[0]);
-            }
-            else
-            {
-                const uint32_t k = uint32_t(std::stoi(name.substr(4)));
-                const uint32_t level = RUN_LEVEL[k];
-                gx = CeilDiv(aw >> level, rules->tile[k][0]);
-                gy = CeilDiv(ah >> level, rules->tile[k][1]);
+                case Kind::Spd:
+                    gx = CeilDiv(rw, 64);
+                    gy = CeilDiv(rh, 64);
+                    break;
+                case Kind::Rcas:
+                    gx = CeilDiv(aw, 16);
+                    gy = CeilDiv(ah, 16);
+                    break;
+                case Kind::Prepass:
+                case Kind::Postpass:
+                    gx = CeilDiv(aw, desc.tile[0]);
+                    gy = CeilDiv(ah, desc.tile[1]);
+                    break;
+                case Kind::Border:
+                {
+                    // Clears the border of a tensor: threads as the shader counts them (it stops the
+                    // rest) from the tensor size and the tier's allocation (aligned).
+                    const uint32_t level = desc.level;
+                    const uint32_t w = aw >> level, h = ah >> level;
+                    const uint32_t align = rules->post_align;
+                    const uint32_t tw = ((tier2160 ? 3840u : 1920u) >> level) + align - 1;
+                    const uint32_t th = (tier2160 ? 2160u : 1080u) >> level;
+                    const uint32_t kx = std::min(tw / align * align + 1 - w, align + 1);
+                    const uint32_t ky = std::min(th + 1 - h, 1u);
+                    const uint32_t threads = (w + 1 + kx) + h + h * kx + (w + 1 + kx) * ky;
+                    gx = CeilDiv(threads, p.refl.local_size[0]);
+                    break;
+                }
+                case Kind::Model:
+                    gx = CeilDiv(aw >> desc.level, desc.tile[0]);
+                    gy = CeilDiv(ah >> desc.level, desc.tile[1]);
+                    break;
             }
             vkCmdDispatch(cmd, gx, gy, 1);
             if (profile_pool != nullptr)
@@ -1100,12 +1221,57 @@ struct Upscaler::Impl
     }
 };
 
+unsigned AvailableModels(const std::string& dir, const Features& f)
+{
+    unsigned bits = 0;
+    if ((f.fp8_matrices && Built(dir, FP8)) || (f.fp16_matrices && Built(dir, FP8_EMULATED)))
+    {
+        bits |= 1u << 1;
+    }
+    if (Built(dir, INT8))
+    {
+        bits |= 1u << 2;
+    }
+    if (Built(dir, NAVI2))
+    {
+        bits |= 1u << 3;
+    }
+    if (Built(dir, LITE))
+    {
+        bits |= 1u << 4;
+    }
+    return bits;
+}
+
 Upscaler::Upscaler(VkPhysicalDevice physical, VkDevice device, std::string dir, Features features)
     : impl{std::make_unique<Impl>(physical, device, std::move(dir), features)}
 {
 }
 
 Upscaler::~Upscaler() = default;
+
+bool Upscaler::Build(bool ultra_performance, uint32_t output_width, uint32_t output_height)
+{
+    impl->error.clear();
+    if (output_width == 0 || output_height == 0 || output_width > 3840 || output_height > 2160)
+    {
+        impl->error = "unsupported output " + std::to_string(output_width) + "x" + std::to_string(output_height);
+        return false;
+    }
+    if ((impl->Create(Impl::SetName(ultra_performance, output_width, output_height), output_width, output_height,
+                      output_width > 1920 || output_height > 1080) == false))
+    {
+        impl->Destroy();
+        return false;
+    }
+    return true;
+}
+
+bool Upscaler::Matches(bool ultra_performance, uint32_t output_width, uint32_t output_height) const
+{
+    return impl->ready && impl->out_w == output_width && impl->out_h == output_height &&
+           impl->set == Impl::SetName(ultra_performance, output_width, output_height);
+}
 
 bool Upscaler::Record(const Frame& frame)
 {
@@ -1115,6 +1281,11 @@ bool Upscaler::Record(const Frame& frame)
 const std::string& Upscaler::Error() const noexcept
 {
     return impl->error;
+}
+
+const char* Upscaler::ModelName() const
+{
+    return impl->rules->name;
 }
 
 std::string Upscaler::Describe() const

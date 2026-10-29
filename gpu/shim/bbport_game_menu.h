@@ -1,10 +1,9 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: the port's settings as pages of the game's own System menu ("Display", "Game effects",
 // "Game patches" after "Screen/Sound"), built and drawn by the game's menu code: rows are the
 // game's list, toggle and slider rows, texts come from a hook on its message lookup, the values live
-// in the port and are applied as the player changes them. The title menu gets a last item, "Quit
-// Game", which ends the game as closing its window does (the runtime adds the sixth row to the title
-// layouts; BB_TITLE_QUIT=0 leaves the title menu as it is). BB_GAME_MENU=0 leaves the menus as they are.
+// in the port and are applied as the player changes them. BB_GAME_MENU=0 leaves the menu as it is.
 #pragma once
 
 #include <cstdint>

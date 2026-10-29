@@ -62,6 +62,7 @@ jobs:
           test -f out/libbbport_dlss.so
           test -f out/NVIDIA-DLSS-LICENSE.txt
           ls out/libnvidia-ngx-dlss.so.*
+          ls out/libnvidia-ngx-dlssg.so.*
 
       - name: Package the installed tree
         run: |

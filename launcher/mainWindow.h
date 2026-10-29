@@ -14,6 +14,7 @@ class LauncherPage;
 class LogPage;
 class ModsPage;
 class OnlinePage;
+class TrophiesPage;
 class QLabel;
 class QListWidget;
 class QPushButton;
@@ -41,6 +42,7 @@ private:
         Graphics,
         Controls,
         Mods,
+        Trophies,
         Online,
         Advanced,
         Log,
@@ -72,6 +74,7 @@ private:
     GraphicsPage* m_graphicsPage = nullptr;
     ControlsPage* m_controlsPage = nullptr;
     ModsPage* m_modsPage = nullptr;
+    TrophiesPage* m_trophiesPage = nullptr;
     OnlinePage* m_onlinePage = nullptr;
     AdvancedPage* m_advancedPage = nullptr;
     LogPage* m_logPage = nullptr;

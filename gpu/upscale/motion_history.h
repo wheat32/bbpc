@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
@@ -259,12 +260,35 @@ inline uint32_t JitterPhases(uint32_t render_width, uint32_t output_width)
     return uint32_t(std::clamp(std::ceil(8.0 * ratio * ratio), 8.0, 256.0));
 }
 
+// Instanced draws (the game's foliage: up to 64 bushes or flowers per draw) also carry a hash of
+// their per-instance matrices: culling changes which objects the instances are as the camera
+// turns, often at the same instance count, and instance i then read another bush's positions
+// (frame generation drew bushes where there are none, 2026-10-20).
 struct Draw
 {
-    uint64_t shader{}, geometry{}, indices{}, topology{};
+    uint64_t shader{}, geometry{}, indices{}, topology{}, instance_data{};
     uint32_t index_count{}, instances{}, first_instance{};
     VertexRange vertices;
     bool operator==(const Draw& rhs) const = default;
+};
+
+// Where a draw's object is (its first bone's translation, world space). Repeated draws of one
+// mesh are matched by their order; a match whose object jumped further than MaxStep since last
+// frame is another object (an earlier one was culled) and gets camera vectors instead.
+struct Anchor
+{
+    float x{}, y{}, z{};
+    bool valid{};
+    static constexpr float MAX_STEP = 0.5f;
+    bool Near(const Anchor& other) const
+    {
+        if (valid == false || other.valid == false)
+        {
+            return true;
+        }
+        const float dx = x - other.x, dy = y - other.y, dz = z - other.z;
+        return dx * dx + dy * dy + dz * dz <= MAX_STEP * MAX_STEP;
+    }
 };
 
 // CPU bookkeeping shared with the regression test. Draw identity includes topology and
@@ -280,7 +304,7 @@ public:
     };
     struct Stats
     {
-        uint64_t draws{}, stored{}, loaded{}, unmatched{}, exhausted{}, invalid{}, still{};
+        uint64_t draws{}, stored{}, loaded{}, unmatched{}, exhausted{}, invalid{}, still{}, jumped{};
     } stats;
 
     // A small skeleton (weapon, prop; most are static world pieces) only needs history
@@ -293,13 +317,13 @@ public:
         uint32_t index_count{}, instances{}, first_instance{}, occurrence{};
         bool operator==(const GateKey&) const = default;
     };
-    bool Moving(GateKey key, uint64_t palette)
+    bool Moving(GateKey key, uint64_t palette, Anchor anchor = {})
     {
         key.occurrence = 0;
         key.occurrence = gate_occurrences[key]++;
-        const unsigned long* prev = gate_previous.find(key);
-        const bool moving = prev != nullptr && *prev != palette;
-        gate_current.emplace(key, palette);
+        const Vulkan::Motion::History::Gate* prev = gate_previous.find(key);
+        const bool moving = prev != nullptr && prev->palette != palette && prev->anchor.Near(anchor);
+        gate_current.emplace(key, {palette, anchor});
         stats.still += moving ? 0 : 1;
         return moving;
     }
@@ -316,7 +340,7 @@ public:
         used = 0;
     }
 
-    Allocation Prepare(const Draw& draw)
+    Allocation Prepare(const Draw& draw, Anchor anchor = {})
     {
         ++stats.draws;
         Key key{draw, 0};
@@ -328,11 +352,16 @@ public:
             ++stats.invalid;
             return {};
         }
-        const unsigned int* prev = previous.find(key);
+        const Stored* prev = previous.find(key);
         Allocation result{0, 0, draw.vertices.count, draw.instances, draw.vertices.first, draw.first_instance};
+        if (prev != nullptr && prev->anchor.Near(anchor) == false)
+        {
+            ++stats.jumped;
+            prev = nullptr;
+        }
         if (prev != nullptr)
         {
-            result.load = *prev;
+            result.load = prev->store;
             ++stats.loaded;
         }
         else
@@ -343,7 +372,7 @@ public:
         {
             result.store = 1 + uint32_t(frame & 1) * capacity + used;
             used += uint32_t(count);
-            current.emplace(key, result.store);
+            current.emplace(key, {result.store, anchor});
             ++stats.stored;
         }
         else
@@ -376,6 +405,7 @@ private:
             mix(d.geometry);
             mix(d.indices);
             mix(d.topology);
+            mix(d.instance_data);
             mix(d.index_count);
             mix(d.instances);
             mix(d.first_instance);
@@ -387,7 +417,13 @@ private:
     };
     uint32_t capacity{}, used{};
     uint64_t frame{};
-    FlatMap<Key, uint32_t, Hash> previous, current, occurrences;
+    struct Stored
+    {
+        uint32_t store{};
+        Anchor anchor;
+    };
+    FlatMap<Key, Stored, Hash> previous, current;
+    FlatMap<Key, uint32_t, Hash> occurrences;
     struct GateHash
     {
         size_t operator()(const GateKey& key) const
@@ -407,7 +443,12 @@ private:
             return size_t(h);
         }
     };
-    FlatMap<GateKey, uint64_t, GateHash> gate_previous, gate_current;
+    struct Gate
+    {
+        uint64_t palette{};
+        Anchor anchor;
+    };
+    FlatMap<GateKey, Gate, GateHash> gate_previous, gate_current;
     FlatMap<GateKey, uint32_t, GateHash> gate_occurrences;
 };
 

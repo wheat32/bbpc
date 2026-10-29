@@ -47,9 +47,9 @@ jobs:
         # prebuilt binaries), using Arch's own libraries.
         run: |
           DESTDIR="$PWD/stage" cmake --install out --prefix /usr
-          # NVIDIA's DLSS library stays as NVIDIA built it: NGX refuses a stripped copy.
+          # NVIDIA's DLSS libraries stay as NVIDIA built them: NGX refuses a stripped copy.
           find stage/usr/share/bbpc/bin -type f \( -name '*.so*' -o -perm -u+x \) ! -name 'libnvidia-ngx-dlss.so.*' \
-            -exec strip --strip-debug {} +
+            ! -name 'libnvidia-ngx-dlssg.so.*' -exec strip --strip-debug {} +
           tar -czf bbpc-linux-x86_64.tar.gz -C stage/usr .
 
       - name: Upload tarball artifact

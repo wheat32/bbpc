@@ -28,6 +28,9 @@ ToggleSwitch::ToggleSwitch(QWidget* parent) : QWidget(parent)
     setFixedSize(ToggleSwitch::sizeHint());
     setCursor(Qt::PointingHandCursor);
     setFocusPolicy(Qt::StrongFocus);
+    // The switch flips on the press; the release must not reach SwitchRow too, which flips it on
+    // a release anywhere in the row and so turned every click on the knob straight back.
+    setAttribute(Qt::WA_NoMousePropagation);
     m_anim = new QPropertyAnimation(this, "knobPos", this);
     m_anim->setDuration(ANIM_DURATION_MS);
     m_anim->setEasingCurve(QEasingCurve::InOutQuad);

@@ -1,16 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport render: Rasterizer, dispatches done without running the shader: compute shaders that
 // clear metadata (CMASK/HTILE) or copy or clear an image through its memory are recognized by
 // their resources and replaced by the tracked metadata state or a Vulkan copy or clear (the
 // images live in their own Vulkan memory, not in the buffers the shader would write).
 
-#include <cstdio>
-#include <cstdlib>
-#include <mutex>
-#include <set>
-#include <tuple>
-
 #include "render/raster_internal.h"
+#include "shim/bb_env.h"
 
 namespace Vulkan
 {
@@ -66,6 +62,13 @@ bool Rasterizer::IsComputeMetaClear(const Pipeline* pipeline)
     {
         if (desc.IsSpecial() == false && desc.is_written && texture_cache.ClearMeta(desc.GetSharp(info).base_address))
         {
+            if (FrameCapture::Active())
+            {
+                char note[128];
+                std::snprintf(note, sizeof(note), "\n  compute meta clear %#llx size %u",
+                              (unsigned long long)desc.GetSharp(info).base_address, u32(desc.GetSharp(info).GetSize()));
+                FrameCapture::Note(note);
+            }
             return true; // all slices taken as cleared
         }
     }
@@ -76,62 +79,10 @@ namespace
 {
 
 // The buffers may run past the images (padding up to the next one: the light shafts' 960x540
-// targets are copied as 0x241800 bytes of 0x240000): those bytes are copied as a buffer. A depth
-// image's copy also takes its stencil plane after it (the scene depth: 2 MB after 7 MB), which
-// the image's write-backs to memory never held either: up to the depth's own size.
+// targets are copied as 0x241800 bytes of 0x240000): those bytes are copied as a buffer.
 constexpr u64 MAX_TAIL = 64_KB;
 
-/// A copy into memory that holds no image yet: an image of the source's layout is made there, so
-/// that the copy stays on the GPU. Before, the source went out to memory every frame (tiled back
-/// for the shader to read) and the shader copied it in memory; shaders sampling the copy found
-/// the image, readers of that memory as a buffer get it written back as from any GPU-written
-/// image. Color sources only, and only where no other image overlaps the memory.
-VideoCore::ImageId MakeCopyDestination(VideoCore::TextureCache& texture_cache, const VideoCore::Image& src,
-                                       VAddr address, u64 size)
-{
-    if (src.info.props.is_depth || src.info.num_samples != 1)
-    {
-        return {};
-    }
-    bool occupied = false;
-    texture_cache.ForEachImageInRegion(address, size,
-                                       [&](VideoCore::ImageId, VideoCore::Image&)
-                                       {
-                                           occupied = true;
-                                       });
-    if (occupied)
-    {
-        return {};
-    }
-    VideoCore::TextureCache::ImageDesc desc;
-    desc.info = src.info;
-    desc.info.guest_address = address;
-    desc.info.meta_info = {}; // the source's CMASK and FMASK stay the source's
-    desc.type = VideoCore::TextureCache::BindingType::Texture;
-    return texture_cache.FindImage(desc);
-}
-
 } // namespace
-
-/// BB_IMAGE_COPY_LOG=1: why a two-buffer copy shader went to the real shader, once per shader,
-/// source and reason (the number of the failing check in IsComputeImageCopy).
-static bool RejectCopy(int reason, u64 shader, VAddr src, VAddr dst, u64 size, const char* detail = "")
-{
-    static const bool log = std::getenv("BB_IMAGE_COPY_LOG") != nullptr;
-    if (log)
-    {
-        static std::mutex mutex;
-        static std::set<std::tuple<u64, VAddr, int>> told;
-        std::scoped_lock lock{mutex};
-        if (told.emplace(shader, src, reason).second)
-        {
-            std::printf("Image copy: cs %016llx not replaced (check %d), %#llx -> %#llx, %llu bytes%s\n",
-                        (unsigned long long)shader, reason, (unsigned long long)src, (unsigned long long)dst,
-                        (unsigned long long)size, detail);
-        }
-    }
-    return false;
-}
 
 bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline, bool dry_run)
 {
@@ -139,6 +90,21 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline, bool dry_run)
     {
         return false;
     }
+    // BB_IMAGE_COPY_LOG=1: also why a copy shader over large buffers was not taken.
+    static const bool reject_log = bb_env("BB_IMAGE_COPY_LOG") != nullptr;
+    const auto reject = [&](int why, u64 a, u64 b, u64 size)
+    {
+        if (reject_log && size >= (1u << 20))
+        {
+            static std::atomic<u32> told{0};
+            if (told.fetch_add(1) < 60)
+            {
+                std::printf("Image copy rejected (%d): %#llx -> %#llx, %llu bytes, %u groups\n", why,
+                            (unsigned long long)a, (unsigned long long)b, (unsigned long long)size, CsRegs().dim_x);
+            }
+        }
+        return false;
+    };
     // Two formatted buffers of one size, one read and one written, a dword per thread: a copy
     // between the memory of two images of the same layout.
     const Gcn::ComputeProgram& cs = CsRegs();
@@ -155,59 +121,74 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline, bool dry_run)
     }
     const Gcn::Buffer buf0 = desc0.GetSharp(info);
     const Gcn::Buffer buf1 = desc1.GetSharp(info);
-    const VAddr read = desc0.is_written ? buf1.base_address : buf0.base_address;
-    const VAddr written = desc0.is_written ? buf0.base_address : buf1.base_address;
-    const auto reject = [&](int reason)
-    {
-        return RejectCopy(reason, info.pgm_hash, read, written, buf0.GetSize());
-    };
     if (buf0.GetSize() != buf1.GetSize() || cs.dim_x != buf0.GetSize() / 256)
     {
-        return reject(1);
+        return reject(1, buf0.base_address, buf1.base_address, buf0.GetSize());
     }
     const VideoCore::ImageId image0_id = texture_cache.FindImageFromRange(buf0.base_address, buf0.GetSize());
     if (!image0_id)
     {
-        return reject(desc0.is_written ? 3 : 2);
+        return reject(2, buf0.base_address, buf1.base_address, buf0.GetSize());
     }
-    VideoCore::ImageId image1_id = texture_cache.FindImageFromRange(buf1.base_address, buf1.GetSize(), false);
-    // BB_COPY_DESTINATIONS=0 (experiment): copies into memory without an image run the shader.
-    static const bool make_destinations = []
+    Common::SlotId image1_id = texture_cache.FindImageFromRange(buf1.base_address, buf1.GetSize(), false);
+    if (!image1_id && desc1.is_written == false)
     {
-        const char* env = std::getenv("BB_COPY_DESTINATIONS");
-        return (env != nullptr && env[0] == '0') == false;
-    }();
-    if (!image1_id && desc1.is_written && dry_run == false && make_destinations)
-    {
-        image1_id =
-            MakeCopyDestination(texture_cache, texture_cache.GetImage(image0_id), buf1.base_address, buf1.GetSize());
+        return reject(3, buf0.base_address, buf1.base_address, buf0.GetSize());
     }
     if (!image1_id)
     {
-        return reject(desc0.is_written ? 2 : 3);
+        // The destination is no image yet (the game reads it as a texture later: its previous
+        // frame's targets): one like the source is made there. The shader through memory meant
+        // tiling the target into the game's memory and uploading it again every frame, and with
+        // a reduced preset resolving its proxy first (live preset changes).
+        const VideoCore::Image& source = texture_cache.GetImage(image0_id);
+        if (source.info.guest_size > buf1.GetSize() || source.info.num_samples != 1 ||
+            BbToggle::Disabled(BbToggle::ComputeCopyNewImage))
+        {
+            return reject(3, buf0.base_address, buf1.base_address, buf0.GetSize());
+        }
+        VideoCore::TextureCache::ImageDesc desc{};
+        desc.info = source.info;
+        desc.info.guest_address = buf1.base_address;
+        desc.type = VideoCore::TextureCache::BindingType::Texture;
+        image1_id = texture_cache.FindImage(desc, true);
+        if (!image1_id)
+        {
+            return reject(5, buf0.base_address, buf1.base_address, buf0.GetSize());
+        }
     }
     VideoCore::Image& image0 = texture_cache.GetImage(image0_id);
     VideoCore::Image& image1 = texture_cache.GetImage(image1_id);
+    // The buffers may run past the images (padding up to the next one: the light shafts' 960x540
+    // targets are copied as 0x241800 bytes of 0x240000): those bytes are copied as a buffer.
+    // A depth image with stencil is copied with its stencil plane after it: the destination
+    // (a color image of the depth, R32F) takes the depth; the stencil bytes go as a buffer.
+    const bool stencil_plane = image0.info.props.has_stencil || image1.info.props.has_stencil;
+    const u64 max_tail = stencil_plane ? image0.info.guest_size / 2 : MAX_TAIL;
     const u64 image_size = image0.info.guest_size;
-    const bool depth_source = (desc0.is_written ? image1 : image0).info.props.is_depth;
-    const u64 max_tail = depth_source ? image_size : MAX_TAIL;
     if (image_size != image1.info.guest_size || image0.info.pitch != image1.info.pitch || buf0.GetSize() < image_size ||
         buf0.GetSize() - image_size > max_tail || image0.info.num_bits != image1.info.num_bits)
     {
-        char detail[192];
-        std::snprintf(detail, sizeof(detail),
-                      ": %ux%u fmt %u, %llu bytes, pitch %u, %u bits vs %ux%u fmt %u, %llu "
-                      "bytes, pitch %u, %u bits",
-                      image0.info.size.width, image0.info.size.height, u32(image0.info.pixel_format),
-                      (unsigned long long)image0.info.guest_size, image0.info.pitch, image0.info.num_bits,
-                      image1.info.size.width, image1.info.size.height, u32(image1.info.pixel_format),
-                      (unsigned long long)image1.info.guest_size, image1.info.pitch, image1.info.num_bits);
-        return RejectCopy(4, info.pgm_hash, read, written, buf0.GetSize(), detail);
+        if (reject_log)
+        {
+            static std::atomic<u32> told{0};
+            if (told.fetch_add(1) < 20)
+            {
+                std::printf("Image copy rejected (4): %ux%u fmt %u size %llu pitch %u bits %u / %ux%u fmt %u size %llu "
+                            "pitch %u bits %u, buffer %llu\n",
+                            image0.info.size.width, image0.info.size.height, u32(image0.info.pixel_format),
+                            (unsigned long long)image0.info.guest_size, image0.info.pitch, image0.info.num_bits,
+                            image1.info.size.width, image1.info.size.height, u32(image1.info.pixel_format),
+                            (unsigned long long)image1.info.guest_size, image1.info.pitch, image1.info.num_bits,
+                            (unsigned long long)buf0.GetSize());
+            }
+        }
+        return false;
     }
     VideoCore::Image& src = desc0.is_written ? image1 : image0;
     VideoCore::Image& dst = desc0.is_written ? image0 : image1;
     // BB_IMAGE_COPY_LOG=1 (diagnostics): the copies recognized.
-    static const bool copy_log = std::getenv("BB_IMAGE_COPY_LOG") != nullptr;
+    static const bool copy_log = bb_env("BB_IMAGE_COPY_LOG") != nullptr;
     if (copy_log)
     {
         static std::atomic<u32> printed{0};
@@ -225,7 +206,13 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline, bool dry_run)
     {
         return false;
     }
-    runtime.CopyColorAndDepth(&src, &dst);
+    // Reduced presets: the proxies are copied, not the native images (a resolve each).
+    const Common::SlotId src_id = desc0.is_written ? image1_id : image0_id;
+    const Common::SlotId dst_id = desc0.is_written ? image0_id : image1_id;
+    if (scene_targets->CopyProxy(src_id, dst_id) == false)
+    {
+        runtime.CopyColorAndDepth(&src, &dst);
+    }
     // Before: the shader ran (5 times a frame over the light shafts), writing 2.3 MiB into the
     // game's memory each time (in place: those blocks are dynamic), the target then uploaded
     // from there again: 3.4 ms of GPU time a frame with BB_GUEST_UNCACHED on an RX 7800 XT.
@@ -247,11 +234,7 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline, bool dry_run)
 /// and group count: the number of the failing check in IsComputeImageClear.
 static bool RejectClear(int reason, u32 dim_x)
 {
-    static const bool log = []
-    {
-        const char* env = std::getenv("BB_IMAGE_CLEAR_LOG");
-        return env != nullptr && env[0] == '1';
-    }();
+    static const bool log = bb_env_on("BB_IMAGE_CLEAR_LOG");
     if (log)
     {
         static std::mutex mutex;
@@ -290,17 +273,41 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline)
     const Gcn::Buffer value = value_desc.GetSharp(info);
     const Gcn::Buffer target = target_desc.GetSharp(info);
     const u32 bits = Gcn::NumBitsPerBlock(target.GetDataFmt());
+    if (FrameCapture::Active())
+    {
+        const Common::SlotId id = texture_cache.FindImageFromRange(target.base_address, target.GetSize(), false);
+        char note[200];
+        std::snprintf(note, sizeof(note),
+                      "\n  clear shader: target %#llx size %u bits %u groups %u; image %#llx size %u "
+                      "layers %u",
+                      (unsigned long long)target.base_address, u32(target.GetSize()), bits, u32(cs.dim_x),
+                      id ? (unsigned long long)texture_cache.GetImage(id).info.guest_address : 0ull,
+                      id ? u32(texture_cache.GetImage(id).info.guest_size) : 0u,
+                      id ? texture_cache.GetImage(id).info.resources.layers : 0u);
+        FrameCapture::Note(note);
+    }
     if (value.GetSize() != 16 || cs.dim_x * 128ULL * (bits / 8) != target.GetSize())
     {
         return RejectClear(++reason, cs.dim_x);
     }
-    const VideoCore::ImageId image_id = texture_cache.FindImageFromRange(target.base_address, target.GetSize(), false);
+    // The whole image, or one layer of an array or cube (the point lights' shadow cube is cleared
+    // a face at a time: the game's shader alone wrote only memory, the faces kept older shadows
+    // that showed as wedges of light, 2026-10-29).
+    VideoCore::ImageId image_id = texture_cache.FindImageFromRange(target.base_address, target.GetSize(), false);
+    u32 layer = 0;
+    bool one_layer = false;
+    if (!image_id || texture_cache.GetImage(image_id).info.guest_size != target.GetSize())
+    {
+        image_id = texture_cache.FindImageLayer(target.base_address, target.GetSize(), layer);
+        one_layer = bool(image_id);
+    }
     if (!image_id)
     {
         return RejectClear(++reason, cs.dim_x);
     }
     VideoCore::Image& image = texture_cache.GetImage(image_id);
-    if (image.info.guest_size != target.GetSize() || image.info.num_bits != bits || image.info.props.is_depth)
+    if ((one_layer == false && image.info.guest_size != target.GetSize()) || image.info.num_bits != bits ||
+        image.info.props.is_depth)
     {
         return RejectClear(++reason, cs.dim_x);
     }
@@ -308,7 +315,17 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline)
     const vk::ClearValue clear{
         .color = {.float32 = std::array<float, 4>{color[0], color[1], color[2], color[3]}},
     };
-    const VideoCore::SubresourceRange range{.base = {.level = 0, .layer = 0}, .extent = image.info.resources};
+    const VideoCore::SubresourceRange range =
+        one_layer
+            ? VideoCore::SubresourceRange{.base = {.level = 0, .layer = layer}, .extent = {.levels = 1, .layers = 1}}
+            : VideoCore::SubresourceRange{.base = {.level = 0, .layer = 0}, .extent = image.info.resources};
+    if (FrameCapture::Active())
+    {
+        char note[96];
+        std::snprintf(note, sizeof(note), "\n  clear shader: %s %u cleared", one_layer ? "layer" : "image, layers",
+                      one_layer ? layer : range.extent.layers);
+        FrameCapture::Note(note);
+    }
     runtime.ClearImage(&image, range, clear);
     return true;
 }

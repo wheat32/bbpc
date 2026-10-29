@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tools/fetch_dlss_sdk.sh [DIR]: the parts of NVIDIA's DLSS SDK (github.com/NVIDIA/DLSS) that the
 # DLSS bridge needs, at a pinned release, into DIR (default: dlss-sdk in the checkout): the
-# headers, the static NGX library the bridge links, NVIDIA's runtime library and its license.
+# headers, the static NGX library the bridge links, NVIDIA's runtime libraries (Super Resolution and
+# Frame Generation) and their license.
 # Then build with DLSS_SDK_ROOT=DIR (build.sh, packaging/appimage/build-appimage.sh).
 # The SDK is NVIDIA's (LICENSE.txt): its runtime library may ship inside an application, with
 # that license next to it, never on its own.
@@ -27,5 +28,5 @@ if [[ $(git -C "$dest" rev-parse HEAD) != "$commit" ]]; then
     exit 1
 fi
 git -C "$dest" sparse-checkout set --no-cone /include/ /lib/Linux_x86_64/libnvsdk_ngx.a \
-    '/lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.*' /LICENSE.txt
+    '/lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.*' '/lib/Linux_x86_64/rel/libnvidia-ngx-dlssg.so.*' /LICENSE.txt
 echo "DLSS SDK: $tag in $dest"

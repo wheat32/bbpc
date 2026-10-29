@@ -1,5 +1,7 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "render/vk_occlusion.h"
+#include "shim/bb_env.h"
 
 #include <algorithm>
 #include <array>
@@ -13,6 +15,7 @@
 
 #include "buffers/buffer.h"
 #include "buffers/buffer_cache.h"
+#include "render/vk_gpu_profiler.h"
 #include "bbgpu/shaders/occlusion_resolve_comp.h"
 #include "vulkan/instance.h"
 #include "vulkan/shader_module.h"
@@ -215,6 +218,19 @@ void OcclusionQueries::Resolve()
     const u64 scales_offset = stream.Copy(scales.data(), scales_size, instance.StorageMinAlignment());
     const bool clear_total = total_cleared == false;
     total_cleared = true;
+    Vulkan::GpuProfiler* profiler = GpuProfiler::Get();
+    if (profiler != nullptr)
+    {
+        static const bool per_draw = bb_env_on("BB_GPU_PROFILE_DRAWS");
+        if (per_draw && scheduler.IsRendering() == false)
+        {
+            profiler->MarkInPass(0x0CC1'0000ull,
+                                 []
+                                 {
+                                     return std::string{"occlusion resolve"};
+                                 });
+        }
+    }
     scheduler.Record(
         [this, first, count, num_events, clear_total, stream = stream.Handle(), entries_offset, entries_size,
          scales_offset, scales_size](vk::CommandBuffer cmdbuf)
@@ -275,7 +291,7 @@ void OcclusionQueries::WriteBeforeLabel()
     // the event and finds them written either way: BB_OCCLUSION_READ_TRACE.)
     static const bool ordered = []
     {
-        const char* env = std::getenv("BB_OCCLUSION_LABEL_ORDER");
+        const char* env = bb_env("BB_OCCLUSION_LABEL_ORDER");
         return env == nullptr || env[0] != '0';
     }();
     if (ordered == false)
@@ -289,7 +305,10 @@ void OcclusionQueries::WriteBeforeLabel()
     }
     Resolve();
     ResetAhead();
-    BeginSegment(false);
+    if (Counting())
+    {
+        BeginSegment(false);
+    }
 }
 
 void OcclusionQueries::Suspend(bool inside_render_pass)
@@ -313,7 +332,7 @@ void OcclusionQueries::Suspend(bool inside_render_pass)
 void OcclusionQueries::Resume(bool inside_render_pass)
 {
     std::scoped_lock lk{mutex};
-    if (started && active == false)
+    if (started && active == false && Counting())
     {
         BeginSegment(inside_render_pass);
     }
@@ -325,6 +344,37 @@ namespace
 constexpr u64 VALID = 1ull << 63;
 
 } // namespace
+
+bool OcclusionQueries::Counting() const
+{
+    return intervals == false || open.empty() == false;
+}
+
+void OcclusionQueries::NoteInterval(VAddr address)
+{
+    if (intervals == false)
+    {
+        return;
+    }
+    // A query's begin counters at 16-byte steps, its end counters 8 bytes after them.
+    if (address % 16 == 0 && open.size() < 256)
+    {
+        open.push_back(address);
+        return;
+    }
+    const auto it = std::ranges::find(open, address - 8);
+    if (address % 16 == 8 && it != open.end())
+    {
+        open.erase(it);
+        return;
+    }
+    // Another layout: segments everywhere again, as before (any interval counts all its samples).
+    intervals = false;
+    open.clear();
+    std::printf("Occlusion queries: event at %#llx is no begin or end of an open query: samples "
+                "counted all the time\n",
+                (unsigned long long)address);
+}
 
 void OcclusionQueries::Event(VAddr address, u32 pairs)
 {
@@ -341,7 +391,7 @@ void OcclusionQueries::Event(VAddr address, u32 pairs)
     // BB_OCCLUSION_TRACE=N (diagnostics): the first N events, with the frame and the render pass.
     static const u64 trace = []
     {
-        const char* env = std::getenv("BB_OCCLUSION_TRACE");
+        const char* env = bb_env("BB_OCCLUSION_TRACE");
         return env != nullptr ? std::strtoull(env, nullptr, 10) : 0ull;
     }();
     if (events < trace)
@@ -387,7 +437,7 @@ void OcclusionQueries::Event(VAddr address, u32 pairs)
             // BB_OCCLUSION_SAMPLES=N (diagnostics): the samples the game read, N queries.
             static u64 sample_prints = []
             {
-                const char* env = std::getenv("BB_OCCLUSION_SAMPLES");
+                const char* env = bb_env("BB_OCCLUSION_SAMPLES");
                 return env != nullptr ? std::strtoull(env, nullptr, 10) : 0ull;
             }();
             if (sample_prints != 0 && valid)
@@ -403,7 +453,11 @@ void OcclusionQueries::Event(VAddr address, u32 pairs)
     {
         WatchReads(address, events + 1);
     }
-    BeginSegment(scheduler.IsRendering());
+    NoteInterval(address);
+    if (Counting())
+    {
+        BeginSegment(scheduler.IsRendering());
+    }
     ++events;
     if (scheduler.IsRendering() == false && pending.size() >= 64)
     {
@@ -413,7 +467,10 @@ void OcclusionQueries::Event(VAddr address, u32 pairs)
         }
         Resolve();
         ResetAhead();
-        BeginSegment(false);
+        if (Counting())
+        {
+            BeginSegment(false);
+        }
     }
     // BB_FRAME_STATS: how often the game measures (every 5 s).
     static auto last_report = std::chrono::steady_clock::now();
@@ -444,11 +501,7 @@ void OcclusionQueries::Event(VAddr address, u32 pairs)
 
 bool OcclusionQueries::ReadTrace()
 {
-    static const bool enabled = []
-    {
-        const char* env = std::getenv("BB_OCCLUSION_READ_TRACE");
-        return env != nullptr && env[0] == '1';
-    }();
+    static const bool enabled = bb_env_on("BB_OCCLUSION_READ_TRACE");
     return enabled;
 }
 

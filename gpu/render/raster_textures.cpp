@@ -1,8 +1,10 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport render: Rasterizer, texture and sampler binding with the memoized descriptions, lookups and texture
 // sets.
 
 #include <atomic>
+#include "shim/bb_env.h"
 #include <cstring>
 #include <unordered_map>
 #include <chrono>
@@ -10,6 +12,7 @@
 #include <unordered_set>
 #include <mutex>
 #include "render/raster_internal.h"
+#include "upscale/vk_frame_generation.h"
 
 namespace Vulkan
 {
@@ -78,17 +81,53 @@ bool Rasterizer::TransitSampled(VideoCore::Image& image, const VideoCore::Textur
         return runtime.Transit(&image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eAllCommands,
                                vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite);
     }
+    // The native image as it is (SceneTargets::sampled_access).
+    scene_targets->sampled_access = true;
+    bool result;
     if (is_storage)
     {
-        return runtime.Transit(&image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eAllCommands,
-                               vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite,
-                               desc.view_info.range);
+        result =
+            runtime.Transit(&image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eAllCommands,
+                            vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite, desc.view_info.range);
     }
-    return runtime.Transit(&image,
-                           image.info.props.is_depth ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
-                                                     : vk::ImageLayout::eShaderReadOnlyOptimal,
-                           vk::PipelineStageFlagBits2::eAllCommands, vk::AccessFlagBits2::eShaderRead,
-                           desc.view_info.range);
+    else
+    {
+        result = runtime.Transit(&image,
+                                 image.info.props.is_depth ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
+                                                           : vk::ImageLayout::eShaderReadOnlyOptimal,
+                                 vk::PipelineStageFlagBits2::eAllCommands, vk::AccessFlagBits2::eShaderRead,
+                                 desc.view_info.range);
+    }
+    scene_targets->sampled_access = false;
+    return result;
+}
+
+/// Bloodborne's display pass (fragment shader 0x38d65b32): image 1 is the LUT each byte of the
+/// finished frame goes through, sampler 0 reads it. Noted for frame generation's frames.
+void Rasterizer::NoteDisplayLut(const Shader::Info& stage, u32 first_image_idx)
+{
+    constexpr u64 DISPLAY_LUT_SHADER = 0x38d65b32;
+    if (stage.pgm_hash != DISPLAY_LUT_SHADER || stage.images.size() != 2 || stage.samplers.size() != 1 ||
+        image_infos.size() < first_image_idx + 3)
+    {
+        return;
+    }
+    static bool told = false;
+    if (told == false)
+    {
+        told = true;
+        const Gcn::Image t = stage.images[1].GetSharp(stage);
+        std::printf("Frame generation: the display LUT is a %ux%u image, type %u, %u layers, data "
+                    "format %u, number format %u (array %d)\n",
+                    u32(t.width) + 1, u32(t.height) + 1, u32(t.GetType()), t.NumLayers(), u32(t.GetDataFmt()),
+                    u32(t.GetNumberFmt()), int(stage.images[1].is_array));
+    }
+    Vulkan::FrameGeneration* generation = upscaler->GetFrameGeneration();
+    if (generation != nullptr)
+    {
+        generation->NoteDisplayLut(image_infos[first_image_idx + 1].imageView, image_infos[first_image_idx + 2].sampler,
+                                   image_infos[first_image_idx + 1].imageLayout);
+    }
 }
 
 void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* prepared,
@@ -105,8 +144,26 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         }
     }
     const u32 first_image_idx = image_infos.size();
+    // The T#s and their description hashes: from the prepared draw, else read here once. The
+    // texture set memo needs the hashes (98 % of the PC's sets came from it); without draw
+    // preparation workers (Steam Deck, 4-thread CPUs) every draw bound each texture anew.
+    const Gcn::Image* sharps = prepared != nullptr ? prepared->image_sharps : nullptr;
+    const u64* hashes = prepared != nullptr ? prepared->image_hashes : nullptr;
+    std::array<Gcn::Image, TextureSet::MAX_IMAGES> local_sharps;
+    std::array<u64, TextureSet::MAX_IMAGES> local_hashes;
+    if (prepared == nullptr && on_helper == false && stage.images.empty() == false &&
+        stage.images.size() <= TextureSet::MAX_IMAGES && BbToggle::Disabled(BbToggle::TextureSetMemo) == false)
+    {
+        for (u32 i = 0; i < stage.images.size(); ++i)
+        {
+            local_sharps[i] = stage.images[i].GetSharp(stage);
+            local_hashes[i] = ImageDescHash(local_sharps[i], stage.images[i]);
+        }
+        sharps = local_sharps.data();
+        hashes = local_hashes.data();
+    }
     TextureSet* set_slot = nullptr;
-    if (on_helper == false && BindTexturesFromSet(stage, prepared, first_image_idx, barrier, set_slot))
+    if (on_helper == false && BindTexturesFromSet(stage, hashes, first_image_idx, barrier, set_slot))
     {
         // Descriptor writes: one per image (no mip arrays in a memoized set).
         for (u32 i = 0; i < stage.images.size(); ++i)
@@ -119,6 +176,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             };
         }
         BindSamplers(stage, prepared, binding, write_index);
+        NoteDisplayLut(stage, first_image_idx);
         return;
     }
     image_bindings.clear();
@@ -148,11 +206,10 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
     for (u32 image_index = 0; image_index < stage.images.size(); ++image_index)
     {
         const Shader::ImageResource& image_desc = stage.images[image_index];
-        const Gcn::Image tsharp =
-            prepared != nullptr ? prepared->image_sharps[image_index] : image_desc.GetSharp(stage);
+        const Gcn::Image tsharp = sharps != nullptr ? sharps[image_index] : image_desc.GetSharp(stage);
         // bbport: a hash lookup per texture per draw for a diagnostic only.
-        static const bool warn_meta = std::getenv("BB_WARN_META_TEXTURE") != nullptr;
-        if (warn_meta && (texture_cache.IsMeta(tsharp.Address())) != std::nullopt)
+        static const bool warn_meta = bb_env("BB_WARN_META_TEXTURE") != nullptr;
+        if (warn_meta && texture_cache.IsMeta(tsharp.Address()))
         {
             LOG_WARNING(Render_Vulkan, "Unexpected metadata read by a shader (texture)");
         }
@@ -185,9 +242,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                                      image_desc.is_written == false &&
                                      mip_fallback_mode == Shader::MipStorageFallbackMode::None;
 
-        ImageDescCacheEntry& desc_entry =
-            prepared != nullptr ? CachedImageDescEntry(tsharp, image_desc, prepared->image_hashes[image_index])
-                                : CachedImageDescEntry(tsharp, image_desc);
+        Vulkan::Rasterizer::ImageDescCacheEntry& desc_entry =
+            hashes != nullptr ? CachedImageDescEntry(tsharp, image_desc, hashes[image_index])
+                              : CachedImageDescEntry(tsharp, image_desc);
         // BB_SCENE_DEBUG: proxied scene targets this binding reads at the native size, and why.
         const auto debug_native = [&](const VideoCore::Image& image)
         {
@@ -299,7 +356,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             // BB_PROMPT_TRACE=1: a 32x32 texture holding a key guide icon's bytes, and the image
             // the cache found for it (once per address).
             {
-                static const bool trace = std::getenv("BB_PROMPT_TRACE") != nullptr;
+                static const bool trace = bb_env("BB_PROMPT_TRACE") != nullptr;
                 if (trace && desc.info.size.width <= 128 && desc.info.size.height <= 128)
                 {
                     static std::mutex traced_mutex;
@@ -341,7 +398,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             }
             // BB_UI_TEXTURE_LOG=<file>: when the file appears, every texture the UI draws of the
             // next 2 s bind (once each), for finding what a HUD element samples.
-            static const char* ui_log = std::getenv("BB_UI_TEXTURE_LOG");
+            static const char* ui_log = bb_env("BB_UI_TEXTURE_LOG");
             if (ui_log != nullptr && upscaler->Enabled() && upscaler->InUiPhase())
             {
                 static std::atomic<u64> until_ms{0};
@@ -385,7 +442,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             }
             // BB_PROMPT_TRACE=1: larger block-compressed textures rescanned for an icon's micro
             // tile (the game may copy icons into an atlas on the GPU), every 5 s per address.
-            static const bool trace_atlas = std::getenv("BB_PROMPT_TRACE") != nullptr;
+            static const bool trace_atlas = bb_env("BB_PROMPT_TRACE") != nullptr;
             if (trace_atlas && desc.info.props.is_block)
             {
                 static std::mutex scan_mutex;
@@ -500,6 +557,15 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             if (FrameCapture::Active())
             {
                 FrameCapture::Sampled(image.info, is_storage);
+                const VideoCore::SubresourceRange& range = desc.view_info.range;
+                if (image.info.resources.layers > 1 || range.base.layer ||
+                    desc.view_info.type != Gcn::ImageType::Color2D)
+                {
+                    FrameCapture::Pending(fmt::format("  view {:#x} {}: type {} layers {}+{} of {} (image type {})",
+                                                      image.info.guest_address, is_storage ? "storage" : "sampled",
+                                                      u32(desc.view_info.type), range.base.layer, range.extent.layers,
+                                                      image.info.resources.layers, u32(image.info.type)));
+                }
             }
 
             vk::ImageView view = *image_view.image_view;
@@ -550,6 +616,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
     }
 
     BindSamplers(stage, prepared, binding, write_index);
+    NoteDisplayLut(stage, first_image_idx);
 }
 
 // bbport: the PS4 build samples most scene textures with little or no anisotropic filtering.
@@ -560,7 +627,7 @@ void Rasterizer::ForceAnisotropy(Gcn::Sampler& sharp, bool is_depth) const
 {
     static const int forced = []
     {
-        const char* value = std::getenv("BB_ANISO");
+        const char* value = bb_env("BB_ANISO");
         return value != nullptr ? std::atoi(value) : 16;
     }();
     if (is_depth == false && pipeline_is_compute == false)
@@ -617,11 +684,11 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
     }
 }
 
-bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedStage* prepared, u32 first_image_idx,
+bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const u64* image_hashes, u32 first_image_idx,
                                      bool& barrier, TextureSet*& slot)
 {
     const u32 count = static_cast<u32>(stage.images.size());
-    if (prepared == nullptr || count == 0 || count > TextureSet::MAX_IMAGES ||
+    if (image_hashes == nullptr || count == 0 || count > TextureSet::MAX_IMAGES ||
         BbToggle::Disabled(BbToggle::TextureSetMemo) || FrameCapture::Active())
     {
         return false;
@@ -633,14 +700,14 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
             return false;
         }
     }
-    u64 key = XXH3_64bits_withSeed(prepared->image_hashes, count * sizeof(u64), reinterpret_cast<u64>(&stage));
+    u64 key = XXH3_64bits_withSeed(image_hashes, count * sizeof(u64), reinterpret_cast<u64>(&stage));
     key |= 1; // 0 marks an empty slot
     TextureSet& set = texture_sets[key % texture_sets.size()];
     slot = &set;
     const u64 generation = texture_cache.RegistryGeneration();
     const bool match = set.key == key && set.stage == &stage && set.count == count && set.generation == generation &&
                        set.scene_generation == scene_targets->Generation() &&
-                       std::equal(set.hashes.begin(), set.hashes.begin() + count, prepared->image_hashes);
+                       std::equal(set.hashes.begin(), set.hashes.begin() + count, image_hashes);
     if (match == false)
     {
         ++texture_set_why[set.key != key ? 0 : set.generation != generation ? 1 : 3];
@@ -649,7 +716,7 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
         set.stage = &stage;
         set.count = 0;
         set.generation = ~0ull;
-        std::copy_n(prepared->image_hashes, count, set.hashes.begin());
+        std::copy_n(image_hashes, count, set.hashes.begin());
         return false;
     }
     // Every image still has the backing its view belongs to and needs no refresh.

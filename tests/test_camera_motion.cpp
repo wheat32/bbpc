@@ -1,9 +1,11 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Execute production camera motion SPIR-V: distant geometry, sky and stale object vectors.
 #include <array>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include "vulkan/instance.h"
 #include "render/scheduler.h"
 #include "test_vk_image.h"
@@ -14,6 +16,10 @@ namespace
 {
 
 constexpr float DISTANT = 0.999995f;
+/// The object motion texture's packing (camera_motion.comp): a vector of (2, 0) as two halves, and
+/// the depth's sign bit marking a written vector.
+constexpr u32 OBJECT_VECTOR = 0x00004000u;
+constexpr u32 OBJECT_WRITTEN = 0x80000000u;
 
 } // namespace
 
@@ -33,7 +39,9 @@ int main()
     std::array<vk::DescriptorSetLayoutBinding, 3> bindings{};
     for (u32 i = 0; i < 3; ++i)
     {
-        const vk::Format format = i == 1 ? vk::Format::eR16G16Sfloat : vk::Format::eR32G32B32A32Sfloat;
+        const vk::Format format = i == 0   ? vk::Format::eR32G32B32A32Sfloat
+                                  : i == 1 ? vk::Format::eR16G16Sfloat
+                                           : vk::Format::eR32G32Uint;
         images[i] = TestImage(device, instance.GetAllocator());
         images[i].Create({.imageType = vk::ImageType::e2D,
                           .format = format,
@@ -111,13 +119,14 @@ int main()
                          u32 mode, float expected, bool jitter = false)
     {
         float* pixels = static_cast<float*>(ai.pMappedData);
+        u32* objects = reinterpret_cast<u32*>(pixels + N * 4);
         for (u32 p = 0; p < N; ++p)
         {
             pixels[p * 4] = depth;
-            pixels[N * 4 + p * 4] = 2.f;
-            pixels[N * 4 + p * 4 + 1] = 0.f;
-            pixels[N * 4 + p * 4 + 2] = 1.f;
-            pixels[N * 4 + p * 4 + 3] = object_depth;
+            u32 depth_bits = 0;
+            std::memcpy(&depth_bits, &object_depth, sizeof(depth_bits));
+            objects[p * 2] = OBJECT_VECTOR;
+            objects[p * 2 + 1] = depth_bits | OBJECT_WRITTEN;
         }
         const vk::CommandBuffer cmd = scheduler.CommandBuffer();
         std::array<vk::ImageMemoryBarrier2, 3> transitions{};

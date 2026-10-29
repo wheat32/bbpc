@@ -28,10 +28,14 @@ add_library(bbpc_launcher_core STATIC
     core/capabilities.cpp
     core/choices.h
     core/choices.cpp
+    core/desktopShortcut.h
+    core/desktopShortcut.cpp
     core/fsr411Build.h
     core/fsr411Build.cpp
     core/gameEnvironment.h
     core/gameEnvironment.cpp
+    core/graphicsSettings.h
+    core/graphicsSettings.cpp
     core/hostEnvironment.h
     core/launcherSettings.h
     core/launcherSettings.cpp
@@ -46,6 +50,8 @@ add_library(bbpc_launcher_core STATIC
     core/portPaths.cpp
     core/profiles.h
     core/profiles.cpp
+    core/trophies.h
+    core/trophies.cpp
     core/upscalerAssets.h
     core/upscalerAssets.cpp
     process/groupProcess.h
@@ -84,6 +90,8 @@ add_executable(bbpc
     pages/modsPage.cpp
     pages/onlinePage.h
     pages/onlinePage.cpp
+    pages/trophiesPage.h
+    pages/trophiesPage.cpp
     widgets/choiceCombo.h
     widgets/choiceCombo.cpp
     widgets/icons.h
@@ -110,4 +118,6 @@ endif()
 include(GNUInstallDirs)
 install(TARGETS bbpc RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES io.github.wheat32.bbpc.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+# AppStream data for software centers and AppImage managers (#287).
+install(FILES io.github.wheat32.bbpc.metainfo.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
 install(FILES assets/io.github.wheat32.bbpc.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)

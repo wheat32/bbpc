@@ -24,15 +24,22 @@ namespace Choices
 
     const QList<Choice>& upscalers();
     const QList<Choice>& presets();
-    const QList<Choice>& memoryModels();
-    const QList<Choice>& gameLanguages();
-    const QList<Choice>& liveResolution();
+    // Frame generation as the launcher offers it (GraphicsSettings maps it to bbport.ini's
+    // frame_generation and frame_generation_multiplier); the DLSS entries start with "dlss".
+    const QList<Choice>& frameGenerations();
+    const QList<Choice>& lowLatency();
+    const QList<Choice>& antiAliasing();
+    const QList<Choice>& textureQuality();
+    // The PS4 system language the game sees (BB_LANGUAGE), by its number.
+    const QList<Choice>& systemLanguages();
+    // bbport.ini game_text_language / game_voice_language: the game's own codes (patches.py).
+    const QList<Choice>& gameTextLanguages();
+    const QList<Choice>& gameVoiceLanguages();
     const QList<Choice>& presentModes();
     const QList<Choice>& modelDetail();
     const QList<Choice>& fpsModes();
     const QList<Choice>& drawPipe();
-    const QList<Choice>& readbacks();
-    const QList<Choice>& preupload();
+    const QList<Choice>& buttonPrompts();
     const QList<Choice>& onlinePools();
     const QList<Choice>& themes();
 
@@ -52,6 +59,7 @@ namespace Choices
     // One input of the game (runtime_pad.c): bbport.ini key.<name>= / pad.<name>= replace the
     // default; no line keeps it. Keyboard defaults are Dark Souls III-like ("Left Shift+Mouse
     // Left" is a chord); gamepad buttons use SDL's names. padDefault nullptr: no gamepad binding.
+    // A binding lists up to MAX_KEYS_PER_ACTION keys or buttons, separated by commas.
     struct Control
     {
         const char* name;
@@ -62,4 +70,11 @@ namespace Choices
 
     const QList<Control>& controls();
     QString label(const Control& control);
+
+    // The keys or buttons one action takes at most (runtime_pad/bindings.c MAX_BIND).
+    inline constexpr int MAX_KEYS_PER_ACTION = 4;
+
+    // The binding current ("E, Mouse X2") with input added: kept once, the oldest dropped beyond
+    // MAX_KEYS_PER_ACTION.
+    QString addBinding(const QString& current, const QString& input);
 }

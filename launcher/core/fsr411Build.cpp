@@ -20,6 +20,10 @@ constexpr int EXIT_NO_RECORDER = 8;
 const QRegularExpression STEP(QStringLiteral("^\\[\\s*(\\d+)/(\\d+)\\]"));
 constexpr int STEP_CURRENT_GROUP = 1;
 constexpr int STEP_COUNT_GROUP = 2;
+// "FSR 4.1.2 navi2: recording ..." / "... translating ...": the driver model being built.
+const QRegularExpression DRIVER_STEP(QStringLiteral("^FSR 4\\.1\\.2 (\\S+): (recording|translating)"));
+constexpr int DRIVER_MODEL_GROUP = 1;
+constexpr int DRIVER_STAGE_GROUP = 2;
 
 QString translate(const char* text)
 {
@@ -55,6 +59,12 @@ Fsr411Build::Command Fsr411Build::command(const QString& upscalerDll, const QStr
         command.arguments.append(loaderDll);
     }
     return command;
+}
+
+Fsr411Build::Command Fsr411Build::driverCommand(const QString& driver, const QString& upscalerDll)
+{
+    // build_assets.sh <driver> [upscaler DLL]: the same tools, environment and output folder.
+    return command(driver, upscalerDll);
 }
 
 QString Fsr411Build::errorMessage(int exitCode)
@@ -98,6 +108,13 @@ QString Fsr411Build::progress(const QString& line)
     if (line.startsWith(QStringLiteral("Translating")))
     {
         return translate("Translating the passes to SPIR-V...");
+    }
+    const QRegularExpressionMatch driver = DRIVER_STEP.match(line);
+    if (driver.hasMatch())
+    {
+        return driver.captured(DRIVER_STAGE_GROUP) == QStringLiteral("recording")
+            ? translate("FSR 4.1.2 %1: recording the driver's passes under Proton...").arg(driver.captured(DRIVER_MODEL_GROUP))
+            : translate("FSR 4.1.2 %1: translating the passes to SPIR-V...").arg(driver.captured(DRIVER_MODEL_GROUP));
     }
     return {};
 }

@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cp_decoder.h"
 
@@ -220,7 +221,7 @@ void Decoder::Decode(std::span<const u32> buffer, Sink& sink, int depth)
             case Op::DrawIndexIndirectMulti:
             case Op::DrawIndexIndirectCountMulti:
             {
-                static constexpr auto kind = [](Op op)
+                static constexpr auto KIND = [](Op op)
                 {
                     switch (op)
                     {
@@ -238,7 +239,7 @@ void Decoder::Decode(std::span<const u32> buffer, Sink& sink, int depth)
                 };
                 ++stats.draws;
                 // The draw initiator is the last dword of each of these.
-                sink.OnDraw({kind(packet->Opcode()), 0, 0, packet->body.back(), packet});
+                sink.OnDraw({KIND(packet->Opcode()), 0, 0, packet->body.back(), packet});
                 break;
             }
             case Op::DispatchDirect:

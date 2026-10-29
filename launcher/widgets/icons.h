@@ -26,6 +26,8 @@ namespace Icons
         Document,
         Copy,
         Save,
+        Add,
+        Trophy,
     };
 
     QIcon get(Kind kind);

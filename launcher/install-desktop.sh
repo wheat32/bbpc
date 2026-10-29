@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright 2026 bbport contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Adds this checkout's launcher to the application menu (~/.local/share/applications), with its
 # icon. Build it first: bash build.sh.
 set -euo pipefail

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* libSceAjm: audio decoder batches. Batches use the SDK chunk format (the
  * builder functions are imports, but games may also build chunks inline), and
  * run synchronously at submission: decoding a batch takes well under a
@@ -5,6 +7,7 @@
  * LibAtrac9 (MIT, third_party/LibAtrac9). MP3/AAC instances stop explicitly. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "../gpu/shim/bb_env.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -136,7 +139,7 @@ static int ajm_trace(void)
 {
     if (trace_left < 0)
     {
-        const char* e = getenv("BB_AUDIO_TRACE");
+        const char* e = bb_env("BB_AUDIO_TRACE");
         trace_left = e != nullptr && e[0] == '1' ? 400 : 0;
     }
     return trace_left > 0 && trace_left--;

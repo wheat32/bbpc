@@ -1,5 +1,7 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "render/vk_indirect_guard.h"
+#include "shim/bb_env.h"
 
 #include <algorithm>
 #include <array>
@@ -52,11 +54,7 @@ s64 NowNs()
 
 bool IndirectGuard::Enabled()
 {
-    static const bool enabled = []
-    {
-        const char* v = std::getenv("BB_INDIRECT_GUARD");
-        return (v != nullptr && v[0] == '0') == false;
-    }();
+    static const bool enabled = bb_env_off("BB_INDIRECT_GUARD") == 0;
     return enabled;
 }
 
@@ -76,7 +74,7 @@ IndirectGuard::IndirectGuard(const Instance& instance_, Scheduler& scheduler_)
     {
         max_count[i] = limits.maxComputeWorkGroupCount[i];
     }
-    const char* max = std::getenv("BB_INDIRECT_GUARD_MAX");
+    const char* max = bb_env("BB_INDIRECT_GUARD_MAX");
     max_total = max != nullptr && *max ? static_cast<u32>(std::strtoul(max, nullptr, 0)) : 1u << 22;
 
     std::array<vk::DescriptorSetLayoutBinding, 3> bindings{};
@@ -112,7 +110,7 @@ IndirectGuard::IndirectGuard(const Instance& instance_, Scheduler& scheduler_)
     // The draws' check: the same bindings, a larger push block.
     checked_draws = std::make_unique<VideoCore::Buffer>(instance, 0, NUM_DRAW_SLOTS * 20,
                                                         VideoCore::MemoryType::DeviceLocal, "Indirect draw arguments");
-    const char* max_v = std::getenv("BB_INDIRECT_GUARD_MAX_VERTICES");
+    const char* max_v = bb_env("BB_INDIRECT_GUARD_MAX_VERTICES");
     max_vertices = max_v != nullptr && *max_v ? static_cast<u32>(std::strtoul(max_v, nullptr, 0)) : 1u << 26;
     const vk::ShaderModule draw_module = CompileSPV(INDIRECT_DRAW_GUARD_COMP, device);
     draw_pipeline = Check(device.createComputePipelineUnique(

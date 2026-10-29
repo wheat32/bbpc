@@ -1,5 +1,7 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cp/pm4_selftest.h"
+#include "shim/bb_env.h"
 
 #include <chrono>
 #include <cmath>
@@ -271,11 +273,7 @@ void Report(const Hooks& hooks)
 
 bool Enabled()
 {
-    static const bool enabled = []
-    {
-        const char* env = std::getenv("BB_PM4_SELFTEST");
-        return env != nullptr && env[0] == '1';
-    }();
+    static const bool enabled = bb_env_on("BB_PM4_SELFTEST");
     return enabled;
 }
 
@@ -308,7 +306,7 @@ Injection Next(u32 num_dwords, const Hooks& hooks)
     // BB_PM4_SELFTEST_STEPS=mask (diagnostics): the steps run (bit n: step n); others skipped.
     static const u32 steps = []
     {
-        const char* env = std::getenv("BB_PM4_SELFTEST_STEPS");
+        const char* env = bb_env("BB_PM4_SELFTEST_STEPS");
         return env != nullptr ? u32(std::strtoul(env, nullptr, 0)) : ~0u;
     }();
     if ((steps & (1u << s.step)) == 0 && s.step != 0)

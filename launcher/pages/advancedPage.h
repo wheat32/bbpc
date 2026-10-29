@@ -6,7 +6,7 @@ class ChoiceRow;
 class EntryRow;
 class SwitchRow;
 
-// AdvancedPage - performance options, developer switches (diagnostics, profiling, extra
+// AdvancedPage - the GPU pipeline, developer switches (logs, diagnostics, profiling, extra
 // variables) and the launcher's own appearance.
 class AdvancedPage : public LauncherPage
 {
@@ -22,12 +22,9 @@ signals:
 
 private:
     ChoiceRow* m_pipeRow = nullptr;
-    ChoiceRow* m_readbacksRow = nullptr;
-    ChoiceRow* m_preuploadRow = nullptr;
     SwitchRow* m_mangohudRow = nullptr;
     SwitchRow* m_saveLogRow = nullptr;
     SwitchRow* m_crashDiagRow = nullptr;
-    SwitchRow* m_as03Row = nullptr;
     SwitchRow* m_statsRow = nullptr;
     SwitchRow* m_profileRow = nullptr;
     SwitchRow* m_validationRow = nullptr;

@@ -93,7 +93,9 @@ if (BBPC_BUILD_PORT)
     endif()
 
     # Optional DLSS (NVIDIA RTX): the bridge (gpu/dlss_bridge, the only code using NVIDIA's SDK)
-    # next to bb-probe, with NVIDIA's libnvidia-ngx-dlss.so. Without them DLSS is unavailable.
+    # next to bb-probe, with NVIDIA's libnvidia-ngx-dlss.so (Super Resolution) and
+    # libnvidia-ngx-dlssg.so (Frame Generation, GeForce RTX 40 and newer; SDK 310.7 or newer has
+    # it). Without them DLSS and DLSS Frame Generation are unavailable.
     if (DLSS_SDK_ROOT)
         add_subdirectory(gpu/dlss_bridge)
         set_target_properties(bbport_dlss PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -103,7 +105,7 @@ if (BBPC_BUILD_PORT)
             COMMAND "${CMAKE_COMMAND}" "-DSDK=${DLSS_SDK_ROOT}" "-DOUT=${CMAKE_BINARY_DIR}"
                     -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyDlssRuntime.cmake"
             DEPENDS bbport_dlss
-            COMMENT "NVIDIA's DLSS library next to bb-probe")
+            COMMENT "NVIDIA's DLSS libraries next to bb-probe")
         message(STATUS "DLSS bridge: on (${DLSS_SDK_ROOT})")
     endif()
 endif()
@@ -125,29 +127,32 @@ if (BBPC_BUILD_PORT)
     # FSR 4 v07 (MIT, tools/fetch_fsr4_assets.sh) when it was downloaded; FSR 4.1.1 never (it is
     # built from the player's own AMD DLL).
     install(DIRECTORY fsr4_shaders DESTINATION "${BBPC_PORT_DESTINATION}" OPTIONAL)
+    # The shader recipe pack (docs/shader_recipes.md) and the game's image shapes
+    # (gpu/textures/image_spares.h) when they were made: run.sh hands them to the game.
+    install(FILES shader_recipes.bin image_shapes.txt DESTINATION "${BBPC_PORT_DESTINATION}" OPTIONAL)
 
     set(BBPC_INSTALL_PROBE_RPATH "\$ORIGIN/gpu" ${BBPC_PACKAGE_RPATH})
     set_target_properties(bb-probe PROPERTIES INSTALL_RPATH "${BBPC_INSTALL_PROBE_RPATH}")
     set_target_properties(bb-gpu-capabilities bbgpu PROPERTIES INSTALL_RPATH "${BBPC_PACKAGE_RPATH}")
     install(TARGETS bb-probe bb-gpu-capabilities RUNTIME DESTINATION "${BBPC_PORT_DESTINATION}/bin")
     install(TARGETS bbgpu LIBRARY DESTINATION "${BBPC_PORT_DESTINATION}/bin/gpu")
-    foreach (module IN ITEMS bbnet bbnet20)
-        if (TARGET ${module})
-            set(BBPC_MODULE_RPATH "\$ORIGIN" ${BBPC_PACKAGE_RPATH})
-            set_target_properties(${module} PROPERTIES INSTALL_RPATH "${BBPC_MODULE_RPATH}")
-            install(TARGETS ${module} LIBRARY DESTINATION "${BBPC_PORT_DESTINATION}/bin/gpu")
-        endif()
-    endforeach()
+    if (TARGET bbnet20)
+        set(BBPC_MODULE_RPATH "\$ORIGIN" ${BBPC_PACKAGE_RPATH})
+        set_target_properties(bbnet20 PROPERTIES INSTALL_RPATH "${BBPC_MODULE_RPATH}")
+        install(TARGETS bbnet20 LIBRARY DESTINATION "${BBPC_PORT_DESTINATION}/bin/gpu")
+    endif()
     if (TARGET bbport_dlss)
         # NVIDIA's RTX SDK license allows the runtime library in an application; its text goes along.
         install(TARGETS bbport_dlss LIBRARY DESTINATION "${BBPC_PORT_DESTINATION}/bin")
         # file(INSTALL) adds DESTDIR itself, as the rules install() writes do.
-        install(CODE "file(GLOB BBPC_NGX_LIBRARIES \"${CMAKE_BINARY_DIR}/libnvidia-ngx-dlss.so.*\")
+        install(CODE "file(GLOB BBPC_NGX_LIBRARIES \"${CMAKE_BINARY_DIR}/libnvidia-ngx-dlss.so.*\"
+                                                  \"${CMAKE_BINARY_DIR}/libnvidia-ngx-dlssg.so.*\")
                       file(INSTALL \${BBPC_NGX_LIBRARIES}
                            DESTINATION \"\${CMAKE_INSTALL_PREFIX}/${BBPC_PORT_DESTINATION}/bin\")")
         install(FILES "${CMAKE_BINARY_DIR}/NVIDIA-DLSS-LICENSE.txt" DESTINATION "${BBPC_PORT_DESTINATION}")
     endif()
-    install(FILES LICENSE README.md DESTINATION "${BBPC_PORT_DESTINATION}")
+    # version.json: the version run.sh puts first in every log.
+    install(FILES LICENSE NOTICE README.md version.json DESTINATION "${BBPC_PORT_DESTINATION}")
 endif()
 
 if (BBPC_BUILD_TESTS AND BBPC_BUILD_PORT)
@@ -156,8 +161,11 @@ if (BBPC_BUILD_TESTS AND BBPC_BUILD_PORT)
     bbpc_port_c_target(pad-test)
     target_link_libraries(pad-test PRIVATE m PkgConfig::BBPC_VULKAN PkgConfig::BBPC_SDL3)
 
-    add_executable(file-mods-test tests/test_file_mods.c)
+    add_executable(file-mods-test tests/test_file_mods.c src/runtime_remote.c)
     bbpc_port_c_target(file-mods-test)
+
+    add_executable(trophy-runtime-test tests/test_trophy.c src/runtime_trophy.c)
+    bbpc_port_c_target(trophy-runtime-test)
 
     add_executable(content-test tests/test_content.c src/runtime_content.c)
     bbpc_port_c_target(content-test)
@@ -173,11 +181,14 @@ if (BBPC_BUILD_TESTS AND BBPC_BUILD_PORT)
     foreach (test IN ITEMS pad runtime file-mods sema online content)
         add_test(NAME runtime.${test} COMMAND ${test}-test WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     endforeach()
+    # The trophy log's test writes into a folder of its own in the build folder.
+    add_test(NAME runtime.trophy COMMAND trophy-runtime-test "${CMAKE_CURRENT_BINARY_DIR}/trophy_test_tmp")
 
-    # The GPU library's tests: neither launches the game nor needs a Vulkan device.
-    set(BBPC_GPU_TESTS motion-history-test ui-composition-test cp-decoder-test fx-init-clear-test
-        effect-flags-test dlss-generation-test pending-reads-test settings-test upscaler-support-test scene-resolution-test
-        motion-shader-test taa-shader-test camera-motion-test translation-memory-test
+    # The GPU library's tests: neither launches the game nor needs a Vulkan device (image-spares-test
+    # needs a real GPU and is only built on request).
+    set(BBPC_GPU_TESTS trophy-test motion-history-test ui-composition-test cp-decoder-test fx-init-clear-test
+        effect-flags-test dlss-generation-test settings-test camera-matrices-test upscaler-support-test
+        scene-resolution-test motion-shader-test taa-shader-test camera-motion-test translation-memory-test
         srt-walker-fault-test)
     foreach (test IN LISTS BBPC_GPU_TESTS)
         set_target_properties(${test} PROPERTIES EXCLUDE_FROM_ALL OFF)

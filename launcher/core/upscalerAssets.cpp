@@ -82,18 +82,31 @@ QString UpscalerAssets::fsr411Problem(const QString& directory, const QString& o
     return {};
 }
 
-QString UpscalerAssets::ngxVersion(const QFileInfo& library)
+QString UpscalerAssets::ngxPrefixOf(const QString& fileName)
 {
-    return library.fileName().mid(NGX_PREFIX.size());
+    // The longer one first: "dlss.so." is not a prefix of "dlssg.so.", but check it anyway.
+    for (const QString& prefix : { NGX_FG_PREFIX, NGX_PREFIX })
+    {
+        if (fileName.startsWith(prefix))
+        {
+            return prefix;
+        }
+    }
+    return {};
 }
 
-QFileInfoList UpscalerAssets::ngxLibraries(const QString& directory)
+QString UpscalerAssets::ngxVersion(const QFileInfo& library)
+{
+    return library.fileName().mid(ngxPrefixOf(library.fileName()).size());
+}
+
+QFileInfoList UpscalerAssets::ngxLibraries(const QString& directory, const QString& prefix)
 {
     QFileInfoList libraries;
     const QFileInfoList entries = QDir(directory).entryInfoList(QDir::Files | QDir::NoDotAndDotDot);
     for (const QFileInfo& entry : entries)
     {
-        if (entry.fileName().startsWith(NGX_PREFIX))
+        if (ngxPrefixOf(entry.fileName()) == prefix)
         {
             libraries.append(entry);
         }
@@ -105,11 +118,11 @@ QFileInfoList UpscalerAssets::ngxLibraries(const QString& directory)
     return libraries;
 }
 
-QFileInfo UpscalerAssets::ngxInUse(const QString& ownDirectory, const QString& packageDirectory)
+QFileInfo UpscalerAssets::ngxInUse(const QString& ownDirectory, const QString& packageDirectory, const QString& prefix)
 {
     for (const QString& directory : { ownDirectory, packageDirectory })
     {
-        const QFileInfoList libraries = ngxLibraries(directory);
+        const QFileInfoList libraries = ngxLibraries(directory, prefix);
         if (libraries.isEmpty() == false)
         {
             return libraries.last();

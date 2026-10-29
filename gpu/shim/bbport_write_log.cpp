@@ -1,5 +1,7 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_write_log.h"
+#include "shim/bb_env.h"
 #include "bbport_free_check.h"
 
 #include <array>
@@ -40,7 +42,7 @@ int Mode()
 {
     static const int mode = []
     {
-        const char* env = std::getenv("BB_WRITE_LOG");
+        const char* env = bb_env("BB_WRITE_LOG");
         return env != nullptr ? std::atoi(env) : 0;
     }();
     return mode;

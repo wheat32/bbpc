@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: two-stage draw pipeline (docs/parallel_gpu.md, "Two-stage draw pipeline").
 //
@@ -12,6 +13,7 @@
 #pragma once
 
 #include <cstdlib>
+#include "shim/bb_env.h"
 #include "bbport_threads.h"
 #include "bbport_sections.h"
 #include "bbport_timeline.h"
@@ -67,8 +69,6 @@ public:
 
     /// True on the draw recording thread.
     [[nodiscard]] static bool OnStageB() noexcept { return on_stage_b; }
-
-    [[nodiscard]] u32 StageBThreadId() const noexcept { return stage_b_tid.load(std::memory_order_acquire); }
 
     /// Stage A: space for a packet of `size` bytes (8-byte aligned), valid until Commit().
     u8* Begin(u32 size)
@@ -208,6 +208,7 @@ public:
     /// Stage A: the number the next committed packet gets (packets are numbered from 1), and
     /// whether stage B has run the packet with that number.
     [[nodiscard]] u64 NextPacket() const noexcept { return packets + 1; }
+    [[nodiscard]] u64 ConsumedPackets() const noexcept { return consumed_packets.load(std::memory_order_acquire); }
     [[nodiscard]] bool ReachedPacket(u64 number) const noexcept
     {
         return consumed_packets.load(std::memory_order_acquire) >= number;
@@ -283,9 +284,9 @@ private:
     void Run(std::stop_token stop)
     {
         Common::SetCurrentThreadName("bb:DrawRec");
+        BbThreads::MakeCritical();
         on_stage_b = true;
         BbSections::recording_thread = true;
-        stage_b_tid.store(static_cast<u32>(gettid()), std::memory_order_release);
         u64 at = 0;
         while (true)
         {
@@ -300,7 +301,7 @@ private:
                 static const std::chrono::microseconds spin_time = std::chrono::microseconds(
                     []
                     {
-                        const char* env = std::getenv("BB_PIPE_SPIN_US");
+                        const char* env = bb_env("BB_PIPE_SPIN_US");
                         if (env != nullptr)
                         {
                             return std::max(0, std::atoi(env));
@@ -369,7 +370,7 @@ private:
         static const std::chrono::microseconds spin_time = std::chrono::microseconds(
             []
             {
-                const char* env = std::getenv("BB_PIPE_SPIN_US");
+                const char* env = bb_env("BB_PIPE_SPIN_US");
                 if (env != nullptr)
                 {
                     return std::max(0, std::atoi(env));
@@ -450,7 +451,6 @@ private:
     std::atomic<u64> consumed_packets{0}; ///< packets stage B has run (NextPacket numbers)
     alignas(64) std::atomic<u32> wake{0};
     std::atomic<bool> sleeping{false};
-    std::atomic<u32> stage_b_tid{0};
     std::jthread thread;
 };
 

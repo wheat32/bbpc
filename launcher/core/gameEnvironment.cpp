@@ -4,13 +4,16 @@
 #include <QRegularExpression>
 
 #include "onlineAddresses.h"
+#include "trophies.h"
 
 namespace
 {
 const QString ON = QStringLiteral("1");
 const QString OFF = QStringLiteral("0");
-const QString NET_GENERATION = QStringLiteral("20");
 const QRegularExpression WHITESPACE(QStringLiteral("\\s+"));
+// MangoHud's default lines and the game's RAM and VRAM; a MANGOHUD_CONFIG of the user's wins (set,
+// it takes the place of MangoHud's config file).
+const QString MANGOHUD_LINES = QStringLiteral("fps,frametime,frame_timing,gpu_stats,cpu_stats,ram,vram");
 
 QString flag(bool value)
 {
@@ -86,11 +89,13 @@ QProcessEnvironment GameEnvironment::build(const LauncherSettings& s, const QPro
         env.insert(QStringLiteral("BB_FPS_LIMIT"), QString::number(s.fpsLimit));
     }
     insertIfSet(env, QStringLiteral("BB_DRAW_PIPE"), s.drawPipe);
-    insertIfSet(env, QStringLiteral("BB_READBACKS"), s.readbacks);
-    insertIfSet(env, QStringLiteral("BB_PREUPLOAD"), s.preupload);
     if (s.mangohud)
     {
         env.insert(QStringLiteral("MANGOHUD"), ON);
+        if (env.contains(QStringLiteral("MANGOHUD_CONFIG")) == false)
+        {
+            env.insert(QStringLiteral("MANGOHUD_CONFIG"), MANGOHUD_LINES);
+        }
     }
     if (s.frameStats)
     {
@@ -101,11 +106,11 @@ QProcessEnvironment GameEnvironment::build(const LauncherSettings& s, const QPro
         env.insert(QStringLiteral("BB_SAVE_LOG"), ON);
     }
 
-    // The memory model: "auto" is run.sh's choice (the new one on every GPU); BB_PC_MODEL from
-    // the shell or the extra variables still wins over it.
-    if (s.memoryModel == QStringLiteral("new") || s.memoryModel == QStringLiteral("old"))
+    // The game's camera turns back behind the character by itself; with the mouse the port keeps
+    // it from doing so unless asked (src/runtime_pad/bindings.c).
+    if (s.mouseAutoRotate)
     {
-        env.insert(QStringLiteral("BB_PC_MODEL"), flag(s.memoryModel == QStringLiteral("new")));
+        env.insert(QStringLiteral("BB_MOUSE_AUTO_ROTATE"), ON);
     }
 
     // The GPU chosen by name: its index in Vulkan's order now. One not found (taken out, renamed
@@ -122,11 +127,6 @@ QProcessEnvironment GameEnvironment::build(const LauncherSettings& s, const QPro
         }
     }
 
-    // Synchronization and memory as released in 0.3 (run.sh: BB_AS_0_3), for comparisons.
-    if (s.as03)
-    {
-        env.insert(QStringLiteral("BB_AS_0_3"), ON);
-    }
     if (s.crashDiag)
     {
         env.insert(QStringLiteral("BB_FREE_CHECK"), ON);
@@ -153,7 +153,6 @@ QProcessEnvironment GameEnvironment::build(const LauncherSettings& s, const QPro
         env.insert(QStringLiteral("BB_SHADNET_PASSWORD"), s.onlinePassword);
         env.insert(QStringLiteral("BB_UPNP"), flag(s.onlineUpnp));
         env.insert(QStringLiteral("BB_COMMUNITY_SERVER"), community);
-        env.insert(QStringLiteral("BB_NET_GEN"), NET_GENERATION);
         if (s.pool() == QStringLiteral("seamless") && s.onlineBbsc)
         {
             env.insert(QStringLiteral("BB_BBSC"), ON);
@@ -166,6 +165,12 @@ QProcessEnvironment GameEnvironment::build(const LauncherSettings& s, const QPro
             env.insert(QStringLiteral("BB_THD_ONLINE_ID"), s.thdOnlineId);
             env.insert(QStringLiteral("BB_THD_TOKEN"), s.thdToken);
         }
+    }
+
+    // The trophy names and icons are decrypted with the player's own key (gpu/shim/bbport_trophies).
+    if (Trophies::validKey(s.trophyKey))
+    {
+        env.insert(QStringLiteral("BB_TROPHY_KEY"), s.trophyKey.trimmed());
     }
 
     // The developer's extra variables: NAME=value, space-separated.

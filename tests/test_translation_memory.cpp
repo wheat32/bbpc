@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Exercise the production paged SPIR-V emitter and portable label writer on a real Vulkan GPU.
 #include <array>
@@ -89,13 +90,15 @@ int main(int argc, char** argv)
     entries[DST_PAGE + 1 + GUEST_TABLE] = guest.bda + PAGE;
     // DstPage+2 is unmapped even though the descriptor includes it.
     uint32_t* record = static_cast<u32*>(records.mapped);
-    const auto put_record = [&](u32 at, u32 base, u32 size, bool through)
+    // The page table covers guest addresses from Shader::PageTableBase: the pages count from there.
+    const auto put_record = [&](u32 at, u64 base, u32 size, bool through)
     {
-        const u32 words[8] = {base, 0, size, u32(through), u32(trash.bda), u32(trash.bda >> 32), GUEST_TABLE, 0};
+        const u32 words[8] = {u32(base),      u32(base >> 32),      size,        u32(through),
+                              u32(trash.bda), u32(trash.bda >> 32), GUEST_TABLE, 0};
         std::memcpy(record + at, words, sizeof(words));
     };
-    put_record(0, SRC_PAGE * PAGE, PAGE, false);
-    put_record(64, DST_PAGE * PAGE, BYTES, true);
+    put_record(0, Shader::PAGE_TABLE_BASE + SRC_PAGE * PAGE, PAGE, false);
+    put_record(64, Shader::PAGE_TABLE_BASE + DST_PAGE * PAGE, BYTES, true);
 
     Info info{};
     info.hw_stage = HwStage::Compute;

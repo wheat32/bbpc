@@ -19,8 +19,8 @@ struct LauncherSettings
     // Game
     QString gameDir;
     QString userDir;
+    // The PS4 system language the game sees (BB_LANGUAGE): its menus, its confirm button.
     QString language = QStringLiteral("1");
-    QString memoryModel = QStringLiteral("auto");
     QString gpu;
 
     // Mods and third-party patches
@@ -37,6 +37,9 @@ struct LauncherSettings
     // Controls
     QString gamepad;
     QString gamepadName;
+    // The game's own camera auto-rotation also while the mouse turns the camera
+    // (BB_MOUSE_AUTO_ROTATE=1; off in the port since 0.7).
+    bool mouseAutoRotate = false;
 
     // Game patches and frame rate
     bool skipNetworkChoice = true;
@@ -45,15 +48,12 @@ struct LauncherSettings
 
     // Performance
     QString drawPipe;
-    QString readbacks;
-    QString preupload;
 
     // Developer
     bool mangohud = false;
     bool frameStats = false;
     bool saveLog = false;
     bool crashDiag = false;
-    bool as03 = false;
     bool gpuProfile = false;
     bool vkValidation = false;
     QString extraEnv;
@@ -72,8 +72,14 @@ struct LauncherSettings
     QString thdOnlineId;
     QString thdToken;
 
-    // FSR 4.1.1: the folder the last AMD DLL was chosen from.
+    // Trophies: the player's trophy key (32 hexadecimal digits, the one shadPS4 asks for), with
+    // which the game decrypts the trophy names and icons (BB_TROPHY_KEY).
+    QString trophyKey;
+
+    // FSR 4.1.1: the folder the last AMD DLL was chosen from, and that DLL (FSR 4.1.2's driver
+    // models are recorded through it).
     QString fsr411DllDir;
+    QString fsr411Dll;
 
     // The saved object, unknown keys included; toJson() writes the known ones over it.
     QJsonObject saved;

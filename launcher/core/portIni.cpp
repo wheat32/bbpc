@@ -10,7 +10,7 @@
 
 namespace
 {
-const QString HEADER = QStringLiteral("# bbport settings (in-game menu: Insert / L3+R3)");
+const QString HEADER = QStringLiteral("# bbport settings (in-game menu: Insert / hold L3+R3)");
 
 // The key of a "key=value" line, or an empty string for comments and other lines.
 QString lineKey(const QString& line)
@@ -27,6 +27,8 @@ const QList<QPair<QString, QString>>& PortIni::defaults()
 {
     static const QList<QPair<QString, QString>> list = []()
     {
+        // live_resolution is gone: live changes are always on (run.sh), an old key changes nothing.
+        // output_res=auto: the monitor's own resolution.
         QList<QPair<QString, QString>> keys = {
             { QStringLiteral("upscaler"), QStringLiteral("fsr4") },
             { QStringLiteral("preset"), QStringLiteral("4") },
@@ -34,12 +36,23 @@ const QList<QPair<QString, QString>>& PortIni::defaults()
             { QStringLiteral("sharpness"), QStringLiteral("0.50") },
             { QStringLiteral("object_motion"), QStringLiteral("1") },
             { QStringLiteral("show_fps"), QStringLiteral("1") },
-            { QStringLiteral("output_res"), QStringLiteral("1920x1080") },
+            { QStringLiteral("vbao"), QStringLiteral("0") },
+            { QStringLiteral("anti_aliasing"), QStringLiteral("auto") },
+            { QStringLiteral("texture_quality"), QStringLiteral("auto") },
+            { QStringLiteral("output_res"), QStringLiteral("auto") },
             { QStringLiteral("model_lod"), QStringLiteral("0") },
-            { QStringLiteral("live_resolution"), QStringLiteral("0") },
+            { QStringLiteral("frame_generation"), QStringLiteral("off") },
+            { QStringLiteral("frame_generation_multiplier"), QStringLiteral("2") },
+            { QStringLiteral("low_latency"), QStringLiteral("on") },
             { QStringLiteral("mouse_look"), QStringLiteral("1") },
             { QStringLiteral("mouse_sensitivity"), QStringLiteral("1.00") },
             { QStringLiteral("mouse_invert_y"), QStringLiteral("0") },
+            { QStringLiteral("mouse_invert_x"), QStringLiteral("0") },
+            { QStringLiteral("camera_speed_x"), QStringLiteral("1.00") },
+            { QStringLiteral("camera_speed_y"), QStringLiteral("1.00") },
+            { QStringLiteral("button_prompts"), QStringLiteral("auto") },
+            { QStringLiteral("game_text_language"), QStringLiteral("auto") },
+            { QStringLiteral("game_voice_language"), QStringLiteral("auto") },
         };
         for (const Choices::Effect& effect : Choices::effects())
         {

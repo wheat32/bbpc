@@ -11,6 +11,8 @@
 #include "common/types.h"
 
 extern "C" int runtime_memory_vma_info(uintptr_t address, int* prot, int* type, uintptr_t* end);
+// The low region (the game's image, stacks): its static pointers live there (#282).
+extern "C" int runtime_memory_low_info(uintptr_t address, int* prot, uintptr_t* end);
 
 namespace Core
 {
@@ -61,7 +63,8 @@ public:
         }
         int p = 0, type = -1;
         uintptr_t mapping_end = 0;
-        if (runtime_memory_vma_info(address, &p, &type, &mapping_end) == 0)
+        if (runtime_memory_vma_info(address, &p, &type, &mapping_end) == 0 &&
+            runtime_memory_low_info(address, &p, &mapping_end) == 0)
         {
             return -1;
         }

@@ -84,7 +84,8 @@ with patchelf: `bb-probe` is not position independent.
 | `scripts/launcher_query.py` | The launcher's questions to the port's Python helpers, answered as JSON |
 | `packaging/arch/packages.txt` | Every Arch package the build and the game need |
 | `packaging/appimage/build-appimage.sh` | The AppImage (linuxdeploy) |
-| `version.json` | The version (`app_version`): the launcher, CMake and the release tag read it |
+| `version.json` | The version (`app_version`) and the bbport release bbpc is based on (`upstream_version`): the launcher, CMake, `run.sh` and the release tag read it |
+| `gpu/shim/bb_env_vars.def` | Every `BB_*` variable the port reads, with what it does (`docs/ENVIRONMENT.md` is made from it) |
 
 ## Conventions
 
@@ -106,7 +107,8 @@ own `.clang-format` and `.clang-tidy` files turn the checks off there.
 - **No `.ui` files**: all layouts built programmatically in constructors
 - **Singletons** via `static T& instance()`: `AppConfig`
 - **Logging**: use `DBG_APP(msg)`, `DBG_GAME(msg)`, `DBG_HELPER(msg)`, `DBG_SETTINGS(msg)` (`launcher/debug.h`; stdout, tagged and timestamped). Never use `qDebug()`. The game's own output goes to the Log page.
-- **Versioning**: single source of truth is `version.json` (key: `app_version`); the launcher reads it at runtime via the embedded resource `:/version.json`, CMake reads it for the project version, and the release workflow tags `v<app_version>`. Never hardcode a version.
+- **Versioning**: single source of truth is `version.json` (key: `app_version`; `upstream_version` names the bbport release bbpc is based on); the launcher reads it at runtime via the embedded resource `:/version.json`, CMake reads it for the project version, `run.sh` logs both, and the release workflow tags `v<app_version>`. Never hardcode a version, and keep no other version file.
+- **Environment variables**: the runtime and the GPU library read `BB_*` variables through `gpu/shim/bb_env.h` (`bb_env`, `bb_env_on`, `bb_env_off`, ...), not with `getenv` directly (the DLSS bridge and the online module, libraries of their own, use `getenv`); every variable, wherever it is read, is listed with a description in `gpu/shim/bb_env_vars.def`. After adding or changing one, run `python3 scripts/env_vars.py --doc` to regenerate `docs/ENVIRONMENT.md`; `tests/test_env_vars.py` fails on a variable read but not listed, listed but read nowhere, or a stale document.
 - **Themes**: dark and light palettes are set in `themeManager.cpp`; all widget-specific styles go in `style_dark.qss` / `style_light.qss`. Never hardcode style strings in widget code.
 - **Translations**: UI strings use `tr()` or `QCoreApplication::translate()`; static tables mark theirs with `QT_TRANSLATE_NOOP`.
 - **Dependencies**: a new Arch package goes into `packaging/arch/packages.txt` (the CI installs from it). Header-only libraries get a pinned download fallback in CMake when they are not in Arch's official repositories.

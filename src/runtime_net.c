@@ -1,10 +1,13 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* Online play (BB_ONLINE=1): the game's network and PSN imports go to the online module
- * (gpu/bbnet: libbbnet.so beside libbbgpu.so), loaded here on the first such import. Offline,
+ * (gpu/bbnet20: libbbnet20.so beside libbbgpu.so), loaded here on the first such import. Offline,
  * or when the module is missing or fails to start, they stay with the runtime's offline
  * versions (runtime_services.c). Trophies, voice and the store/profile dialogs always stay here. */
 #define _GNU_SOURCE
 #include "runtime.h"
-#include "gpu/bbnet/bbnet.h"
+#include "../gpu/shim/bb_env.h"
+#include "gpu/bbnet20/bbnet.h"
 #include <dlfcn.h>
 #include <limits.h>
 #include <stdio.h>
@@ -27,7 +30,7 @@ int runtime_net_enabled(void)
     static int enabled = -1;
     if (enabled < 0)
     {
-        const char* v = getenv("BB_ONLINE");
+        const char* v = bb_env("BB_ONLINE");
         enabled = v != nullptr && v[0] == '1';
     }
     return enabled;
@@ -95,7 +98,8 @@ void runtime_net_start(void)
     }
 }
 
-/* The module: BB_NET_MODULE, else gpu/libbbnet.so beside bb-probe (where libbbgpu.so is). */
+/* The module: BB_NET_MODULE, else gpu/libbbnet20.so beside bb-probe (where libbbgpu.so is);
+   on Windows online/bbnet20.dll beside bin/ (the package's folder). */
 static BbNetResolveFn module_resolve(void)
 {
     static int tried;
@@ -106,7 +110,7 @@ static BbNetResolveFn module_resolve(void)
     }
     tried = 1;
     char path[PATH_MAX];
-    const char* forced = getenv("BB_NET_MODULE");
+    const char* forced = bb_env("BB_NET_MODULE");
     if (forced != nullptr && forced[0])
     {
         snprintf(path, sizeof(path), "%s", forced);
@@ -125,7 +129,11 @@ static BbNetResolveFn module_resolve(void)
         {
             *slash = 0;
         }
-        snprintf(path, sizeof(path), "%s/gpu/libbbnet.so", exe);
+#ifdef _WIN32
+        snprintf(path, sizeof(path), "%s/../online/bbnet20.dll", exe);
+#else
+        snprintf(path, sizeof(path), "%s/gpu/libbbnet20.so", exe);
+#endif
     }
     /* RTLD_LOCAL: its C++ (network and NP libraries) stays out of the process's symbol scope. */
     void* module = dlopen(path, RTLD_NOW | RTLD_LOCAL);

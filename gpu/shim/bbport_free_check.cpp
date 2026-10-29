@@ -1,5 +1,7 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_free_check.h"
+#include "shim/bb_env.h"
 
 #include <algorithm>
 #include <array>
@@ -34,9 +36,10 @@ constexpr u64 HEADER_OFFSET = 0xfc0;
 constexpr u64 BLOCK_SIZE = 0x30;
 constexpr u64 MAX_BLOCKS = HEADER_OFFSET / BLOCK_SIZE;
 
-const char* const SourceNames[] = {"EOP fence",         "EOS fence",       "EOS GDS store", "WriteData",
-                                   "compute WriteData", "ReleaseMem",      "DumpConstRam",  "DMA fill",
-                                   "DMA copy",          "buffer download", "image download"};
+const char* const SourceNames[] = {"EOP fence",         "EOS fence",        "EOS GDS store",     "WriteData",
+                                   "compute WriteData", "ReleaseMem",       "DumpConstRam",      "DMA fill",
+                                   "DMA copy",          "buffer download",  "image download",    "GPU label",
+                                   "GPU timestamp",     "mirror copy back", "in-place GPU write"};
 
 const char* Name(u32 source)
 {
@@ -567,12 +570,39 @@ void CheckPage(u64 page, u64 begin, u64 end, u64 value, u64 size, Source source,
 
 bool Enabled()
 {
+    static const bool enabled = bb_env_on("BB_FREE_CHECK");
+    return enabled;
+}
+
+bool WatchEnabled()
+{
     static const bool enabled = []
     {
-        const char* env = std::getenv("BB_FREE_CHECK");
-        return env != nullptr && env[0] == '1';
+        return Enabled() || (bb_env_on("BB_POOL_WATCH"));
     }();
     return enabled;
+}
+
+void NoteGpuWrite(u64 address, u64 size, u64 value, Source source)
+{
+    if (WatchEnabled() == false || size == 0 || address == 0)
+    {
+        return;
+    }
+    StartWatcher();
+    // Small writes (labels, timestamps) find the pool pages to watch; every write is logged for
+    // the report of a damaged page (a range, recorded once).
+    if (size <= 64)
+    {
+        const u64 page = address & ~(PAGE_SIZE - 1);
+        Header h;
+        std::memcpy(&h, reinterpret_cast<const void*>(page + HEADER_OFFSET), sizeof(h));
+        if (Plausible(page, h))
+        {
+            Watch(page);
+        }
+    }
+    Record(address, size, value, source, 0);
 }
 
 namespace
@@ -620,7 +650,7 @@ u64 NextFenceSeq()
 
 void Check(u64 address, u64 size, const void* data, Source source, u64 seq)
 {
-    if (Enabled() == false || size == 0 || address == 0)
+    if (WatchEnabled() == false || size == 0 || address == 0)
     {
         return;
     }
@@ -644,20 +674,14 @@ void Check(u64 address, u64 size, const void* data, Source source, u64 seq)
         {
             late_20ms.fetch_add(1, std::memory_order_relaxed);
         }
-        // Honest labels (BB_GUEST_IN_PLACE, BB_HONEST_LABELS) are written once the GPU has done the
-        // work: tens of ms after the recording thread are normal there; only stalls are reported.
-        static const u64 report_ns = []
-        {
-            const char* in_place = std::getenv("BB_GUEST_IN_PLACE");
-            const char* honest = std::getenv("BB_HONEST_LABELS");
-            return (in_place != nullptr && in_place[0] == '1') || (honest != nullptr && honest[0] == '1') ? 500000000ull
-                                                                                                          : 50000000ull;
-        }();
+        // Labels are written once the GPU has done the work: tens of ms after the recording
+        // thread are normal; only stalls are reported.
+        constexpr u64 REPORT_NS = 500000000ull;
         if (latency > 50000000)
         {
             late_50ms.fetch_add(1, std::memory_order_relaxed);
         }
-        if (latency > report_ns)
+        if (latency > REPORT_NS)
         {
             if (latency_reports.Take())
             {
@@ -703,6 +727,13 @@ void Check(u64 address, u64 size, const void* data, Source source, u64 seq)
     {
         CheckPage(page, std::max(address, page), std::min(end, page + PAGE_SIZE), value, size, source, seq, small);
     }
+}
+
+void DumpWrites(u64 address, u64 size, const char* what)
+{
+    std::fprintf(stderr, "Free check: %s %#llx +%#llx: recorded writes into it%s\n", what, (unsigned long long)address,
+                 (unsigned long long)size, WatchEnabled() ? "" : " (none recorded: BB_POOL_WATCH=1 records them)");
+    PrintRecent(address, address + size, NowNs(), 16);
 }
 
 void DumpAtFault(u64 rax, u64 r14)
@@ -771,7 +802,7 @@ int TrapMode()
 {
     static const int mode = []
     {
-        const char* env = std::getenv("BB_LABEL_TRAP");
+        const char* env = bb_env("BB_LABEL_TRAP");
         const int m = Enabled() && env != nullptr && (env[0] == '1' || env[0] == '2') ? env[0] - '0' : 0;
         if (m != 0)
         {

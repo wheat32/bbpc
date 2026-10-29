@@ -24,7 +24,7 @@ public:
 
     void store(LauncherSettings& settings, PortIni& ini) const override;
 
-    // The build has the online module (gpu/libbbnet20.so).
+    // The build has the online module (gpu/libbbnet20.so, or the one BB_NET_MODULE names).
     [[nodiscard]] static bool hasOnlineModule();
 
     [[nodiscard]] bool playOnline() const;

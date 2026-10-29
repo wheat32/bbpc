@@ -1,7 +1,10 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "vulkan/staging_pool.h"
+#include "shim/bb_env.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <numeric>
@@ -14,6 +17,16 @@
 
 namespace Vulkan
 {
+
+namespace
+{
+u64 NowMs()
+{
+    return u64(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+} // namespace
 
 using VideoCore::MemoryType;
 
@@ -43,7 +56,7 @@ constexpr bool Mapped(MemoryType type)
 StagingBufferPool::StagingBufferPool(const Instance& instance_, Scheduler& scheduler_)
     : instance{instance_}, scheduler{scheduler_}
 {
-    const char* keep = std::getenv("BB_STAGING_KEEP_MB");
+    const char* keep = bb_env("BB_STAGING_KEEP_MB");
     keep_segments = (keep != nullptr ? std::strtoull(keep, nullptr, 10) : 512) * MIB / SEGMENT_SIZE;
     Segments& uploads = segments[u32(MemoryType::HostUncached)];
     for (u64 i = 0; i < PREWARM_SEGMENTS; ++i)
@@ -72,6 +85,7 @@ StagingBufferPool::Segment& StagingBufferPool::NewSegment(Segments& list, Memory
     list.list.push_back(Segment{
         .buffer = std::make_unique<VideoCore::Buffer>(instance, 0, SEGMENT_SIZE, type, "StagingBufferPool:Segment"),
         .last_frame = frame,
+        .last_ms = NowMs(),
     });
     return list.list.back();
 }
@@ -116,6 +130,7 @@ StagingBufferRef StagingBufferPool::FromSegments(Segments& list, u64 size, u64 a
     segment->used = offset + size;
     segment->last_tick = scheduler.CurrentTick();
     segment->last_frame = frame;
+    segment->last_ms = NowMs();
     VideoCore::Buffer& buffer = *segment->buffer;
     return {
         .buffer = &buffer,
@@ -154,6 +169,7 @@ StagingBufferRef StagingBufferPool::FromWhole(u64 size, MemoryType type, bool de
     }
     best->last_tick = scheduler.CurrentTick();
     best->last_frame = frame;
+    best->last_ms = NowMs();
     best->held = deferred;
     VideoCore::Buffer& buffer = *best->buffer;
     return {
@@ -177,6 +193,7 @@ void StagingBufferPool::FreeDeferred(const StagingBufferRef& ref)
     it->held = false;
     it->last_tick = scheduler.CurrentTick();
     it->last_frame = frame;
+    it->last_ms = NowMs();
 }
 
 void StagingBufferPool::TickFrame()
@@ -191,15 +208,28 @@ void StagingBufferPool::TickFrame()
 
 void StagingBufferPool::TrimIdle(MemoryType type)
 {
-    const auto idle = [&](u64 last_frame, u64 last_tick)
+    // VRAM ones go after a tenth of it: the first touch cost is the system memory's, and at the
+    // 10-25 FPS of a 2 GB card 3000 frames kept 160 MiB of VRAM staging for minutes.
+    const u64 idle_frames = type == MemoryType::DeviceLocal ? IDLE_FRAMES / 10 : IDLE_FRAMES;
+    // BB_STAGING_VRAM_IDLE_MS (3000): VRAM staging also goes after this long unused, whatever the frames
+    // (300 frames were a minute while an area loaded at 5 FPS: 350 MiB of it held on the 2 GB laptop).
+    static const u64 vram_idle_ms = []
     {
-        return frame - last_frame >= IDLE_FRAMES && (last_tick == 0 || scheduler.IsFree(last_tick));
+        const char* env = bb_env("BB_STAGING_VRAM_IDLE_MS");
+        return u64(env != nullptr && *env ? std::strtoull(env, nullptr, 10) : 3000);
+    }();
+    const u64 now_ms = NowMs();
+    const auto idle = [&](u64 last_frame, u64 last_ms, u64 last_tick)
+    {
+        const bool old = frame - last_frame >= idle_frames ||
+                         (type == MemoryType::DeviceLocal && vram_idle_ms != 0 && now_ms - last_ms >= vram_idle_ms);
+        return old && (last_tick == 0 || scheduler.IsFree(last_tick));
     };
     Segments& list = segments[u32(type)];
     const u64 keep = type == MemoryType::HostUncached ? keep_segments : 0;
     for (size_t i = list.list.size(); i-- > 0 && list.list.size() > keep;)
     {
-        if (i == list.current || idle(list.list[i].last_frame, list.list[i].last_tick) == false)
+        if (i == list.current || idle(list.list[i].last_frame, list.list[i].last_ms, list.list[i].last_tick) == false)
         {
             continue;
         }
@@ -212,7 +242,7 @@ void StagingBufferPool::TrimIdle(MemoryType type)
     std::erase_if(wholes[u32(type)],
                   [&](const Whole& whole)
                   {
-                      return whole.held == false && idle(whole.last_frame, whole.last_tick);
+                      return whole.held == false && idle(whole.last_frame, whole.last_ms, whole.last_tick);
                   });
 }
 

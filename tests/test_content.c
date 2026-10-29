@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
+// SPDX-License-Identifier: GPL-2.0-or-later
 #include "runtime.h"
 #include <assert.h>
 #include <stdint.h>
@@ -12,7 +14,6 @@ const char* runtime_file_user_dir(void)
 {
     return user_dir;
 }
-/* Add-on mount points (runtime_file.c in the game): every mount succeeds here. */
 int runtime_file_mount(const char* guest, const char* host)
 {
     (void)guest;

@@ -33,6 +33,16 @@ namespace PortPaths
     QString fsr4capDir();
     QString python();
 
+    // The online module (libbbnet20.so, both pools): the one BB_NET_MODULE names (run.sh takes it
+    // as it is), else gpu/libbbnet20.so next to the port's binaries; true when it is there.
+    bool hasOnlineModule();
+    bool hasOnlineModule(const QString& netModule, const QString& binariesDir);
+
+    // The bbport release bbpc is based on ("0.7": upstream_version in version.json, embedded as a
+    // resource), empty when it is not known.
+    QString portVersion();
+    QString upstreamVersion(const QByteArray& versionJson);
+
     // The port folder for a launcher in applicationDir, or an empty string (exposed for tests).
     QString findPortDir(const QString& applicationDir);
 

@@ -54,8 +54,11 @@ AboutDialog::AboutDialog(QWidget* parent) : QDialog(parent)
     versionGrid->setVerticalSpacing(VERSION_GRID_V_SPACING);
     versionGrid->setColumnStretch(VERSION_VALUE_COLUMN, VERSION_COL_STRETCH);
 
+    // The upstream port's version (its VERSION file), when the port has one.
+    const QString portVersion = PortPaths::portVersion();
     const QList<QPair<QString, QString>> rows = {
         { tr("App version:"), QCoreApplication::applicationVersion() },
+        { tr("Based on bbport:"), portVersion.isEmpty() ? tr("unknown") : portVersion },
         { tr("Qt version:"), QString::fromLatin1(qVersion()) },
         { tr("Package:"), packageTypeName() },
         { tr("Port folder:"), PortPaths::portDir() },

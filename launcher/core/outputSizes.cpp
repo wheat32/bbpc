@@ -155,3 +155,12 @@ QString OutputSizes::format(const QSize& size)
 {
     return QString::number(size.width()) + u'x' + QString::number(size.height());
 }
+
+QSize OutputSizes::effective(const QString& output, const std::optional<QSize>& monitor)
+{
+    if (output.trimmed() == AUTO)
+    {
+        return monitor.value_or(DEFAULT_SIZE);
+    }
+    return parse(output).value_or(DEFAULT_SIZE);
+}

@@ -60,7 +60,12 @@ private slots:
         QCOMPARE(env.value(QStringLiteral("BB_BUILD_DIR")), QStringLiteral("/repo/out"));
         QVERIFY(env.contains(QStringLiteral("BB_PREBUILT")) == false);
         QVERIFY(env.contains(QStringLiteral("BB_ONLINE")) == false);
-        QVERIFY(env.contains(QStringLiteral("BB_PC_MODEL")) == false);
+        // 0.7: one memory model, no 0.3 synchronization, no readback or pre-upload choices.
+        for (const QString& gone : { QStringLiteral("BB_PC_MODEL"), QStringLiteral("BB_AS_0_3"), QStringLiteral("BB_READBACKS"),
+                                     QStringLiteral("BB_PREUPLOAD"), QStringLiteral("BB_MOUSE_AUTO_ROTATE"), QStringLiteral("BB_TROPHY_KEY") })
+        {
+            QVERIFY2(env.contains(gone) == false, qPrintable(gone));
+        }
     }
 
     void build_packaged_setsPrebuiltAndTheDataFolder()
@@ -86,7 +91,8 @@ private slots:
         QCOMPARE(env.value(QStringLiteral("BB_SHADNET_SERVER")), QStringLiteral("play.seamlesshunt.com:31313"));
         QCOMPARE(env.value(QStringLiteral("BB_SHADNET_WEBAPI")), QStringLiteral("http://play.seamlesshunt.com:31315"));
         QCOMPARE(env.value(QStringLiteral("BB_SHADNET_NPID")), QStringLiteral("hunter"));
-        QCOMPARE(env.value(QStringLiteral("BB_NET_GEN")), QStringLiteral("20"));
+        // libbbnet20.so is the only online module: no generation to choose.
+        QVERIFY(env.contains(QStringLiteral("BB_NET_GEN")) == false);
         QCOMPARE(env.value(QStringLiteral("BB_BBSC")), QStringLiteral("1"));
     }
 
@@ -113,15 +119,43 @@ private slots:
         QVERIFY(GameEnvironment::build(settings, {}, sourceTree(), {}).contains(QStringLiteral("BB_ONLINE")) == false);
     }
 
-    void build_extraVariablesAndModel_override()
+    void build_extraVariables_override()
     {
         LauncherSettings settings;
-        settings.memoryModel = QStringLiteral("old");
-        settings.extraEnv = QStringLiteral("BB_FRAME_STATS=1  BB_PC_MODEL=1 junk =x");
+        settings.extraEnv = QStringLiteral("BB_FRAME_STATS=1  BB_LIVE_RES=0 junk =x");
         const QProcessEnvironment env = GameEnvironment::build(settings, {}, sourceTree(), {});
         QCOMPARE(env.value(QStringLiteral("BB_FRAME_STATS")), QStringLiteral("1"));
-        QCOMPARE(env.value(QStringLiteral("BB_PC_MODEL")), QStringLiteral("1"));
+        QCOMPARE(env.value(QStringLiteral("BB_LIVE_RES")), QStringLiteral("0"));
         QVERIFY(env.contains(QStringLiteral("junk")) == false);
+    }
+
+    void build_trophyKey_isPassedOnlyWhenValid()
+    {
+        LauncherSettings settings;
+        settings.trophyKey = QStringLiteral(" 00112233445566778899aabbccddeeff ");
+        QCOMPARE(GameEnvironment::build(settings, {}, sourceTree(), {}).value(QStringLiteral("BB_TROPHY_KEY")),
+                 QStringLiteral("00112233445566778899aabbccddeeff"));
+        settings.trophyKey = QStringLiteral("not a key");
+        QVERIFY(GameEnvironment::build(settings, {}, sourceTree(), {}).contains(QStringLiteral("BB_TROPHY_KEY")) == false);
+    }
+
+    void build_mangohud_getsTheGamesMemoryLinesUnlessConfigured()
+    {
+        LauncherSettings settings;
+        settings.mangohud = true;
+        const QProcessEnvironment env = GameEnvironment::build(settings, {}, sourceTree(), {});
+        QCOMPARE(env.value(QStringLiteral("MANGOHUD")), QStringLiteral("1"));
+        QVERIFY(env.value(QStringLiteral("MANGOHUD_CONFIG")).contains(QStringLiteral("vram")));
+        QProcessEnvironment base;
+        base.insert(QStringLiteral("MANGOHUD_CONFIG"), QStringLiteral("fps"));
+        QCOMPARE(GameEnvironment::build(settings, base, sourceTree(), {}).value(QStringLiteral("MANGOHUD_CONFIG")), QStringLiteral("fps"));
+    }
+
+    void build_mouseAutoRotation_isTheGamesOnlyWhenAsked()
+    {
+        LauncherSettings settings;
+        settings.mouseAutoRotate = true;
+        QCOMPARE(GameEnvironment::build(settings, {}, sourceTree(), {}).value(QStringLiteral("BB_MOUSE_AUTO_ROTATE")), QStringLiteral("1"));
     }
 
     void expandHome_tilde_isTheHomeFolder()

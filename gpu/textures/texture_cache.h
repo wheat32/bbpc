@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport textures: the cache of guest images on the host. Images are found by address and
 // description (FindImage: an exact match, else one resolved from the overlapping images: a
@@ -54,6 +55,9 @@ namespace VideoCore
 {
 
 class BufferCache;
+
+/// Texture uploads lines (partial uploads under the frame's budget), at most every 10 s.
+void ReportPartialUploads();
 
 class TextureCache
 {
@@ -125,6 +129,9 @@ public:
     [[nodiscard]] ImageId FindImage(ImageDesc& desc, bool exact_fmt = false);
     /// The image starting at `address` (`ensure_valid`: written by the GPU and clean).
     [[nodiscard]] ImageId FindImageFromRange(VAddr address, size_t size, bool ensure_valid = true);
+    /// The single-level array (or cube) image one of whose layers is exactly
+    /// [address, address + size), and that layer.
+    [[nodiscard]] ImageId FindImageLayer(VAddr address, size_t size, u32& layer);
     /// The view a texture or storage binding uses; `refresh` false: an image found out of date is
     /// used as is (the caller checked it).
     [[nodiscard]] ImageView& FindTexture(ImageId image_id, const ImageDesc& desc, ViewMemo* memo = nullptr,
@@ -169,7 +176,9 @@ public:
     /// collection period.
     [[nodiscard]] bool IsUpToDate(ImageId image_id) const { return IsUpToDate(slot_images[image_id]); }
     /// Uploads what the guest changed; every binding comes here (lock-free when clean).
-    void UpdateImage(ImageId image_id)
+    /// `partial_ok`: a sampled view of all its levels binds it, so a new upload may start with its
+    /// small levels within the frame's budget (RefreshImage).
+    void UpdateImage(ImageId image_id, bool partial_ok = false)
     {
         if (BbToggle::Disabled(BbToggle::UpdateImageFastPath) == false && IsUpToDate(slot_images[image_id]))
         {
@@ -180,10 +189,11 @@ public:
         TrackImage(image_id);
         WatchImage(image, "update image (slow path)");
         TouchImage(image);
-        RefreshImage(image);
+        RefreshImage(image, partial_ok);
     }
-    /// Uploads the image if it is dirty (detiled on the GPU).
-    void RefreshImage(Image& image);
+    /// Uploads the image if it is dirty (detiled on the GPU), or more of the levels a partial
+    /// upload left out (Image::resident_level) as the frame's budget allows.
+    void RefreshImage(Image& image, bool partial_ok = false);
     /// BB_IMAGE_WATCH=addr (diagnostics): what happens to the image at that address.
     void WatchImage(const Image& image, const char* what);
 
@@ -196,11 +206,12 @@ public:
     void InvalidateMemoryFromGPU(VAddr address, size_t max_size);
     /// The range was unmapped: its images go.
     void UnmapMemory(VAddr cpu_addr, size_t size);
-    /// Writes back the images queued for it (BB_READBACK_LINEAR_IMAGES).
+    /// bbport: the game's allocator freed the range: images wholly inside it go now (not after
+    /// the collector's idle time). The number of bytes of images freed.
+    /// `gpu_made_bytes`: adds the bytes of those the GPU had written as images.
+    u64 FreeDeadImages(VAddr addr, size_t size, u64* gpu_made_bytes = nullptr);
+    /// Writes back the images queued for it (BB_READBACK_LINEAR).
     void ProcessDownloadImages();
-    /// Downloads the GPU made into the game's memory in place so far (it writes there when it
-    /// runs them): Rasterizer::OnSubmit tells from it whether the submission's cache work did.
-    [[nodiscard]] u64 InPlaceDownloads() const { return in_place_downloads.load(std::memory_order_relaxed); }
 
     // Surface metadata (CMASK, FMASK, HTILE) of bound targets.
 
@@ -313,8 +324,9 @@ private:
         const u32 flags = __atomic_load_n(reinterpret_cast<const u32*>(&image.flags), __ATOMIC_ACQUIRE);
         constexpr u32 DIRTY = u32(ImageFlagBits::Dirty);
         constexpr u32 REGISTERED = u32(ImageFlagBits::Registered);
-        return (flags & (DIRTY | REGISTERED)) == REGISTERED && image.track_addr == image.guest_begin &&
-               image.track_addr_end == image.guest_end && image.lru_touched_tick == gc_tick;
+        return (flags & (DIRTY | REGISTERED)) == REGISTERED && image.resident_level == 0 &&
+               image.track_addr == image.guest_begin && image.track_addr_end == image.guest_end &&
+               image.lru_touched_tick == gc_tick;
     }
     u64 CurrentTick() const;
 
@@ -338,6 +350,21 @@ private:
     void MarkAsMaybeDirty(ImageId image_id, Image& image);
     void TouchImage(const Image& image);
     void DeleteImage(ImageId image_id);
+    /// texture_quality: the guest levels a new texture of `desc` leaves out (0, 1 or 2).
+    u32 SkipLevelsFor(const ImageDesc& desc);
+    /// A view of a texture without its largest levels: the guest's levels made the image's.
+    static void AdjustView(const Image& image, ImageViewInfo& view);
+    /// The texture upload budget (BB_TEXTURE_UPLOAD_MB_PER_FRAME): the image level a new upload
+    /// of `image` starts at, its larger levels left for later frames (0: all of it now).
+    u32 PartialUploadStart(const Image& image);
+    /// More of the levels a partial upload left out, as the frame's budget allows (all of them
+    /// unless `partial_ok`: a binding that cannot clamp its view to the levels there).
+    void UploadRemainingLevels(Image& image, bool partial_ok);
+    /// RefreshImage's upload: `copies` of levels from `first_level` on, detiled from there.
+    void UploadImageLevels(Image& image, u32 first_level, std::span<vk::BufferImageCopy> copies);
+    /// Addresses whose textures stay whole (bound otherwise than sampled, or viewed in part).
+    std::unordered_set<VAddr> whole_textures;
+
     void FreeImage(ImageId image_id)
     {
         UntrackImage(image_id);
@@ -349,7 +376,8 @@ private:
     void DownloadImageMemory(ImageId image_id, bool sync);
     void GarbageCollectImages();
     void GarbageCollectSamplers();
-    void UpdateMemoryBudget();
+    /// The collector's marks from `budget` (0: the startup budget).
+    void UpdateMemoryBudget(u64 budget = 0);
 
     const Vulkan::Instance& instance;
     Vulkan::Scheduler& scheduler;
@@ -396,7 +424,6 @@ private:
     std::mutex download_mutex;
     std::unordered_set<ImageId> download_images;
     std::atomic<bool> downloads_queued{false}; ///< checked without the lock
-    std::atomic<u64> in_place_downloads{0};    ///< InPlaceDownloads()
 
     // Garbage collection.
     Common::LeastRecentlyUsedCache<ImageId, u64> lru_cache;

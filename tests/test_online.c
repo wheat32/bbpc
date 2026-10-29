@@ -1,7 +1,9 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
+// SPDX-License-Identifier: GPL-2.0-or-later
 #define _GNU_SOURCE
 #include "runtime.h"
 #include "gpu/bbgpu.h"
-#include "gpu/bbnet/bbnet.h"
+#include "gpu/bbnet20/bbnet.h"
 #include <assert.h>
 #include <dlfcn.h>
 #include <stdint.h>
@@ -15,9 +17,10 @@ void runtime_restart(void)
 }
 
 /* Online play (BB_ONLINE=1): the game's network and PSN imports resolve to the online module
- * (out/gpu/libbbnet.so); trophies stay with the runtime. Without the module (a build without its
- * libraries) there is nothing to check. */
-int main(void)
+ * (out/gpu/libbbnet20.so); trophies stay with the runtime. Without the module (a build without
+ * its libraries) there is nothing to check.
+ * argv[1]: path to the module under test; defaults to out/gpu/libbbnet20.so. */
+int main(int argc, char** argv)
 {
     static const char* const online[] = {
         "Nlev7Lg8k3A#E#F", /* sceNetInit */
@@ -28,7 +31,7 @@ int main(void)
         "3KOuC4RmZZU#T#U", /* sceNpSignalingInitialize */
     };
     static const char* const local = "XbkjbobZlCY#l#m"; /* sceNpTrophyCreateContext */
-    const char* path = "out/gpu/libbbnet.so";
+    const char* path = argc > 1 ? argv[1] : "out/gpu/libbbnet20.so";
     void* module = dlopen(path, RTLD_NOW | RTLD_LOCAL); /* the same handle the runtime gets */
     if (module == nullptr)
     {
@@ -52,6 +55,6 @@ int main(void)
     }
     uintptr_t trophy = runtime_resolve(local, 0);
     assert(trophy && trophy != resolve(local));
-    printf("PASS: online imports go to the online module, trophies stay local\n");
+    printf("PASS: online imports go to %s, trophies stay local\n", path);
     return 0;
 }

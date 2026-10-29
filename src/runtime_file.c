@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* Guest file system: PS4 mount points mapped onto host directories.
  *   /app0, /hostapp  -> game package root (read-only by convention)
  *   /temp0, /download0, /data, and mounts added by SaveData -> user directory
@@ -5,6 +7,7 @@
  * Paths containing ".." components are rejected rather than normalized. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "../gpu/shim/bb_env.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -153,12 +156,42 @@ const char* runtime_file_user_dir(void)
 {
     return user_root;
 }
+/* bbport: the character's save the game is using (userdata0000..userdata0009, one per character;
+ * userdata0010 holds the system data): the last such file it opened. Loading a character reads
+ * its file and the game then writes only that one. Kept per host folder, for the BBSC kit's
+ * journal and its restore (gpu/shim/bbport_kit_restore). */
+static pthread_mutex_t slot_lock = PTHREAD_MUTEX_INITIALIZER;
+static int active_slot = -1;
+static char active_dir[1024];
+static void note_save_slot(const char* host)
+{
+    const char* name = strrchr(host, '/');
+    unsigned slot;
+    char tail;
+    if (name == nullptr || sscanf(name + 1, "userdata%4u%c", &slot, &tail) != 1 || slot > 9) return;
+    pthread_mutex_lock(&slot_lock);
+    active_slot = (int)slot;
+    snprintf(active_dir, sizeof(active_dir), "%.*s", (int)(name - host), host);
+    pthread_mutex_unlock(&slot_lock);
+}
+int runtime_savedata_active_slot(char* dir, size_t size)
+{
+    pthread_mutex_lock(&slot_lock);
+    const int slot = active_slot;
+    if (dir != nullptr && size)
+    {
+        snprintf(dir, size, "%s", slot >= 0 ? active_dir : "");
+    }
+    pthread_mutex_unlock(&slot_lock);
+    return slot;
+}
 void runtime_file_configure(const char* app0, const char* user)
 {
     char path[600];
     snprintf(user_root, sizeof(user_root), "%s", user);
     runtime_file_mount("/app0", app0);
     runtime_file_mount("/hostapp", app0);
+    runtime_remote_configure(app0);
     const char* writable[] = {"temp0", "download0", "data"};
     mkdir(user, 0755);
     for (int i = 0; i < 3; ++i)
@@ -223,7 +256,7 @@ static int translate(const char* guest, char* out, size_t size)
     static int trace = -1;
     if (trace < 0)
     {
-        const char* t = getenv("BB_FILE_TRACE");
+        const char* t = bb_env("BB_FILE_TRACE");
         trace = t != nullptr && t[0] == '1';
     }
     if (trace)
@@ -427,7 +460,7 @@ static int audio_trace(void)
     static int v = -1;
     if (v < 0)
     {
-        const char* e = getenv("BB_AUDIO_TRACE");
+        const char* e = bb_env("BB_AUDIO_TRACE");
         v = e != nullptr && e[0] == '1';
     }
     return v;
@@ -438,7 +471,7 @@ static int save_trace(void)
     static int v = -1;
     if (v < 0)
     {
-        const char* e = getenv("BB_SAVE_TRACE");
+        const char* e = bb_env("BB_SAVE_TRACE");
         v = e != nullptr && e[0] == '1';
     }
     return v;
@@ -810,219 +843,12 @@ static int fix_option_layout(uint8_t* buf, size_t size)
     }
     return 0;
 }
-/* The title screens' command list (menu/title.gfx and its DLC variants) has five rows, Item_0_0
- * .. Item_4_0, and the list shows as many items as it has rows. The port adds Quit Game to the
- * title menu (gpu/shim/bbport_game_menu.cpp), a sixth item that would otherwise scroll: the copy
- * the game reads has a sixth row, Item_5_0, the same clip one row further down (the rows do not
- * overlap; it goes above them in depth). Anything unexpected in the file: the file as it is.
- * BB_GAME_MENU=0 or BB_TITLE_QUIT=0 (no Quit Game) leave it alone too. */
-enum
-{
-    TITLE_ROWS = 5,
-    TITLE_ROW_FLAGS = 0x26, /* PlaceObject2 with a character, a matrix and a name: the rows' own */
-    TITLE_ROW_MIN_LENGTH = 14,
-    TITLE_MATRIX_BITS = 17, /* the new row's translation fields (+-3276 pixels) */
-    TITLE_DEPTH_STEP = 5,
-};
-typedef struct
-{
-    size_t end; /* of the tag */
-    bool long_header;
-    unsigned depth, character;
-    int tx, ty; /* twips */
-} TitleRow;
-static int sign_extend(unsigned v, int n)
-{
-    return (v >> (n - 1)) & 1 ? (int)v - (1 << n) : (int)v;
-}
-/* A title row's PlaceObject2 (code 26): a character and a translation-only matrix; false if not one. */
-static bool title_row(const uint8_t* buf, size_t at, size_t body, size_t len, TitleRow* row)
-{
-    if (len < TITLE_ROW_MIN_LENGTH || buf[body] != TITLE_ROW_FLAGS)
-    {
-        return false;
-    }
-    row->end = body + len;
-    row->long_header = body - at == 6;
-    row->depth = buf[body + 1] | buf[body + 2] << 8;
-    row->character = buf[body + 3] | buf[body + 4] << 8;
-    Bits b = {buf + body + 5, 0};
-    if (bits_read(&b, 1) || bits_read(&b, 1)) /* scale, rotation */
-    {
-        return false;
-    }
-    const int n = (int)bits_read(&b, 5);
-    if (n < 2 || 5 + (7 + 2 * (size_t)n + 7) / 8 > len)
-    {
-        return false;
-    }
-    row->tx = sign_extend(bits_read(&b, n), n);
-    row->ty = sign_extend(bits_read(&b, n), n);
-    return true;
-}
-/* `buf` (an uncompressed GFX) with Item_5_0 below the command list's rows, in `*out` (malloc'ed). */
-static bool fix_title_layout(const uint8_t* buf, size_t size, uint8_t** out, size_t* out_size)
-{
-    if (size < 16 || memcmp(buf, "GFX", 3) != 0)
-    {
-        return false;
-    }
-    const size_t rect = (5 + 4 * (buf[8] >> 3) + 7) / 8, first = 8 + rect + 4;
-    unsigned code, c;
-    size_t body, len, next, inner, ilen, inext;
-    for (size_t at = first; swf_tag(buf, at, size, &code, &body, &len, &next) && code; at = next)
-    {
-        if (code != 39 || len < 4 || body - at != 6) /* a DefineSprite with a 32-bit length */
-        {
-            continue;
-        }
-        TitleRow rows[TITLE_ROWS];
-        bool found[TITLE_ROWS] = {};
-        bool sixth = false;
-        unsigned max_depth = 0;
-        size_t frame_end = 0;
-        for (size_t t = body + 4; swf_tag(buf, t, next, &c, &inner, &ilen, &inext) && c; t = inext)
-        {
-            const uint8_t* d = swf_depth((uint8_t*)buf, c, inner, ilen);
-            if (d != nullptr && (unsigned)(d[0] | d[1] << 8) > max_depth)
-            {
-                max_depth = d[0] | d[1] << 8;
-            }
-            if (c != 26 || frame_end != 0)
-            {
-                if (c == 1 && frame_end == 0)
-                {
-                    frame_end = t; /* the first frame's ShowFrame */
-                }
-                continue;
-            }
-            const char* name = swf_place_name(buf + inner, c, ilen);
-            if (name == nullptr || strncmp(name, "Item_", 5) != 0 || strcmp(name + 6, "_0") != 0)
-            {
-                continue;
-            }
-            const int row = name[5] - '0';
-            if (row == TITLE_ROWS)
-            {
-                sixth = true;
-            }
-            else if (row >= 0 && row < TITLE_ROWS && title_row(buf, t, inner, ilen, &rows[row]))
-            {
-                found[row] = true;
-            }
-        }
-        bool all = sixth == false;
-        for (int i = 0; i < TITLE_ROWS; ++i)
-        {
-            all = all && found[i];
-        }
-        if (all == false)
-        {
-            continue;
-        }
-        /* One clip, one column, evenly spaced downwards. */
-        const int step = rows[1].ty - rows[0].ty;
-        for (int i = 1; i < TITLE_ROWS; ++i)
-        {
-            if (rows[i].character != rows[0].character || rows[i].tx != rows[0].tx ||
-                rows[i].ty - rows[i - 1].ty != step || step <= 0)
-            {
-                return false;
-            }
-        }
-        const TitleRow* last = &rows[TITLE_ROWS - 1];
-        const int ty = last->ty + step, limit = 1 << (TITLE_MATRIX_BITS - 1);
-        const unsigned depth = max_depth + TITLE_DEPTH_STEP;
-        if (ty >= limit || ty < -limit || last->tx >= limit || last->tx < -limit || depth > 0xffff)
-        {
-            return false;
-        }
-        /* The new row: flags, depth, character, matrix (no scale, no rotation), name. */
-        uint8_t row_body[32] = {TITLE_ROW_FLAGS, depth & 0xff, depth >> 8, last->character & 0xff,
-                                last->character >> 8};
-        size_t row_len = 5;
-        unsigned long long bits = TITLE_MATRIX_BITS; /* 2 zero flag bits, then n, tx, ty */
-        bits = bits << TITLE_MATRIX_BITS | ((unsigned)last->tx & ((1u << TITLE_MATRIX_BITS) - 1));
-        bits = bits << TITLE_MATRIX_BITS | ((unsigned)ty & ((1u << TITLE_MATRIX_BITS) - 1));
-        const int matrix_bits = 2 + 5 + 2 * TITLE_MATRIX_BITS, matrix_bytes = (matrix_bits + 7) / 8;
-        bits <<= matrix_bytes * 8 - matrix_bits;
-        for (int i = matrix_bytes - 1; i >= 0; --i)
-        {
-            row_body[row_len++] = (uint8_t)(bits >> (8 * i));
-        }
-        static const char name[] = "Item_5_0";
-        memcpy(row_body + row_len, name, sizeof(name));
-        row_len += sizeof(name);
-        uint8_t tag[40];
-        size_t tag_len = 0;
-        if (last->long_header)
-        {
-            tag[tag_len++] = (26 << 6 | 0x3f) & 0xff;
-            tag[tag_len++] = (26 << 6 | 0x3f) >> 8;
-            for (int i = 0; i < 4; ++i)
-            {
-                tag[tag_len++] = (uint8_t)(row_len >> (8 * i));
-            }
-        }
-        else
-        {
-            tag[tag_len++] = (uint8_t)((26 << 6 | row_len) & 0xff);
-            tag[tag_len++] = (uint8_t)((26 << 6 | row_len) >> 8);
-        }
-        memcpy(tag + tag_len, row_body, row_len);
-        tag_len += row_len;
-        /* After the rows, before the first frame ends. */
-        size_t insert = 0;
-        for (int i = 0; i < TITLE_ROWS; ++i)
-        {
-            insert = rows[i].end > insert ? rows[i].end : insert;
-        }
-        if (frame_end != 0 && insert > frame_end)
-        {
-            return false;
-        }
-        uint8_t* fixed = malloc(size + tag_len);
-        if (fixed == nullptr)
-        {
-            return false;
-        }
-        memcpy(fixed, buf, insert);
-        memcpy(fixed + insert, tag, tag_len);
-        memcpy(fixed + insert + tag_len, buf + insert, size - insert);
-        const uint32_t sprite_len = (uint32_t)(len + tag_len), file_len = (uint32_t)(size + tag_len);
-        for (int i = 0; i < 4; ++i)
-        {
-            fixed[at + 2 + i] = (uint8_t)(sprite_len >> (8 * i));
-            fixed[4 + i] = (uint8_t)(file_len >> (8 * i));
-        }
-        *out = fixed;
-        *out_size = size + tag_len;
-        return true;
-    }
-    return false;
-}
-static bool ends_with(const char* text, const char* suffix)
-{
-    const size_t n = strlen(text), k = strlen(suffix);
-    return n >= k && strcasecmp(text + n - k, suffix) == 0;
-}
-static bool switched_off(const char* variable)
-{
-    const char* env = getenv(variable);
-    return env != nullptr && env[0] == '0';
-}
-/* The host file for `guest`: a fixed copy (a memfd) for the option and title layouts, else `host`. */
+/* The host file for `guest`: a fixed copy (a memfd) for the option layouts, else `host`. */
 static int menu_layout_file(const char* guest, int host)
 {
-    static const char* const titles[] = {"/menu/title.gfx", "/menu/title_dlc.gfx", "/menu/title_dlc_eu.gfx"};
-    const bool options = ends_with(guest, "/menu/optionsetting.gfx");
-    bool title = false;
-    for (size_t i = 0; i < sizeof(titles) / sizeof(titles[0]); ++i)
-    {
-        title = title || ends_with(guest, titles[i]);
-    }
-    if (switched_off("BB_GAME_MENU") || (options == false && title == false) ||
-        (title && switched_off("BB_TITLE_QUIT")))
+    static const char suffix[] = "/menu/optionsetting.gfx";
+    const size_t n = strlen(guest), k = sizeof(suffix) - 1;
+    if ((bb_env_off("BB_GAME_MENU")) || n < k || strcasecmp(guest + n - k, suffix))
     {
         return host;
     }
@@ -1036,40 +862,27 @@ static int menu_layout_file(const char* guest, int host)
     {
         return host;
     }
-    uint8_t* fixed_buf = buf;
-    size_t fixed_size = (size_t)s.st_size;
-    const bool read_all = pread(host, buf, (size_t)s.st_size, 0) == s.st_size;
-    const bool done = read_all && (options ? fix_option_layout(buf, (size_t)s.st_size) != 0
-                                           : fix_title_layout(buf, (size_t)s.st_size, &fixed_buf, &fixed_size));
-    if (done == false)
+    if (pread(host, buf, (size_t)s.st_size, 0) != s.st_size || fix_option_layout(buf, (size_t)s.st_size) == 0)
     {
         free(buf);
         return host;
     }
-    const char* base = strrchr(guest, '/');
-    int fixed = memfd_create(base != nullptr ? base + 1 : guest, MFD_CLOEXEC);
-    const bool written =
-        fixed >= 0 && write(fixed, fixed_buf, fixed_size) == (ssize_t)fixed_size && lseek(fixed, 0, SEEK_SET) == 0;
-    if (fixed_buf != buf)
-    {
-        free(fixed_buf);
-    }
-    free(buf);
-    if (written == false)
+    int fixed = memfd_create("optionsetting.gfx", MFD_CLOEXEC);
+    if (fixed < 0 || write(fixed, buf, (size_t)s.st_size) != s.st_size || lseek(fixed, 0, SEEK_SET))
     {
         if (fixed >= 0)
         {
             close(fixed);
         }
+        free(buf);
         return host;
     }
+    free(buf);
     close(host);
-    static int told_options, told_title;
-    if (__atomic_exchange_n(options ? &told_options : &told_title, 1, __ATOMIC_RELAXED) == 0)
+    static int told;
+    if ((__atomic_exchange_n(&told, 1, __ATOMIC_RELAXED)) == 0)
     {
-        printf(options ? "Runtime: %s: the settings rows stack downwards (pop-up lists cover the rows below)\n"
-                       : "Runtime: %s: a sixth row in the title menu (Quit Game)\n",
-               guest);
+        printf("Runtime: %s: the settings rows stack downwards (pop-up lists cover the rows below)\n", guest);
     }
     return fixed;
 }
@@ -1087,7 +900,7 @@ int runtime_file_host_path(const char* guest, char* out, size_t size)
     {
         return ENOENT;
     }
-    return 0;
+    return runtime_remote_fetch(out);
 }
 static int64_t do_open(const char* guest, int flags, int mode)
 {
@@ -1119,9 +932,17 @@ static int64_t do_open(const char* guest, int flags, int mode)
     }
     else
     {
+        if (game_path(guest) && (e = runtime_remote_fetch(current)))
+        {
+            return -e;
+        }
         host = open(current, host_flags(flags), mode ? mode : 0644);
         if (host < 0 && errno == ENOENT && (flags & 0x200) == 0 && save_path(guest) == 0 && fix_case(current))
         {
+            if (game_path(guest) && (e = runtime_remote_fetch(current)))
+            {
+                return -e;
+            }
             host = open(current, host_flags(flags), mode ? mode : 0644);
             snprintf(path, sizeof(path), "%s", current); // the directory listing below uses it
         }
@@ -1129,6 +950,10 @@ static int64_t do_open(const char* guest, int flags, int mode)
     if (host >= 0 && (flags & 3) == 0 && game_path(guest))
     {
         host = menu_layout_file(guest, host);
+    }
+    if (host >= 0 && save_path(guest))
+    {
+        note_save_slot(path);
     }
     if (save_trace() && save_path(guest))
     {
@@ -1182,7 +1007,7 @@ static int64_t do_open(const char* guest, int flags, int mode)
     {
         printf("Audio trace: open(%s) -> fd %d, %lld bytes\n", guest, fd, (long long)s.st_size);
     }
-    const char *mod_trace = getenv("BB_MOD_TRACE"), *mod_root = getenv("BB_MODS_DIR");
+    const char *mod_trace = bb_env("BB_MOD_TRACE"), *mod_root = bb_env("BB_MODS_DIR");
     if (mod_trace != nullptr && mod_trace[0] == '1' && mod_root != nullptr)
     {
         char actual[PATH_MAX], root[PATH_MAX];
@@ -1299,6 +1124,10 @@ static int64_t do_read(int fd, void* buffer, uint64_t size)
         return -EBADF;
     }
     runtime_memory_note_write((uintptr_t)buffer, size);
+    /* Write traps over the buffer lifted at once (one call), not page by page through the fault
+     * handler: a level's files streaming in made 12-15 thousand faults a second (Windows: hitches
+     * of 60-200 ms, its exceptions cost more). */
+    runtime_memory_prepare_cpu_write((uintptr_t)buffer, size);
     touch_for_write(buffer, size);
     ssize_t n = read_retrying(h, buffer, size, 0, 0);
     if (n < 0)
@@ -1313,6 +1142,10 @@ static int64_t do_read(int fd, void* buffer, uint64_t size)
     {
         runtime_memory_note_write((uintptr_t)buffer, (uint64_t)n);
     } /* and once the data is there */
+    if (n > 0)
+    {
+        runtime_memory_note_cpu_write((uintptr_t)buffer, (uint64_t)n);
+    }
     __atomic_add_fetch(&reads, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&bytes_read, (uint64_t)n, __ATOMIC_RELAXED);
     return n;
@@ -1325,6 +1158,10 @@ static int64_t do_pread(int fd, void* buffer, uint64_t size, int64_t offset)
         return -EBADF;
     }
     runtime_memory_note_write((uintptr_t)buffer, size);
+    /* Write traps over the buffer lifted at once (one call), not page by page through the fault
+     * handler: a level's files streaming in made 12-15 thousand faults a second (Windows: hitches
+     * of 60-200 ms, its exceptions cost more). */
+    runtime_memory_prepare_cpu_write((uintptr_t)buffer, size);
     touch_for_write(buffer, size);
     ssize_t n = read_retrying(h, buffer, size, offset, 1);
     if (n < 0)
@@ -1340,6 +1177,10 @@ static int64_t do_pread(int fd, void* buffer, uint64_t size, int64_t offset)
     {
         runtime_memory_note_write((uintptr_t)buffer, (uint64_t)n);
     } /* and once the data is there */
+    if (n > 0)
+    {
+        runtime_memory_note_cpu_write((uintptr_t)buffer, (uint64_t)n);
+    }
     __atomic_add_fetch(&reads, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&bytes_read, (uint64_t)n, __ATOMIC_RELAXED);
     return n;
@@ -1473,6 +1314,11 @@ static int64_t do_stat(const char* guest, GuestStat* out)
         return r;
     }
     convert_stat(&s, out);
+    int64_t size;
+    if (game_path(guest) && runtime_remote_size(path, &size))
+    {
+        out->size = size;
+    } /* not fetched yet */
     return 0;
 }
 static int64_t do_getdents(int fd, char* buffer, uint64_t size, int64_t* basep)
@@ -1788,7 +1634,8 @@ int64_t runtime_file_getdents(int fd, char* b, uint64_t n, int64_t* base)
 }
 int runtime_file_translate(const char* guest, char* out, size_t size)
 {
-    return translate(guest, out, size);
+    const int e = translate(guest, out, size);
+    return e || game_path(guest) == 0 ? e : runtime_remote_fetch(out); /* avplayer: the movie is read from the host */
 }
 void runtime_file_report(void)
 {

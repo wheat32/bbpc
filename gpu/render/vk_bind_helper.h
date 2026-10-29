@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: a second thread for the GPU command thread's per-draw work (docs/parallel_gpu.md,
 // "Texture binding on a helper thread"). The GPU thread forks one task per draw and joins it
@@ -31,12 +32,13 @@ public:
                 {
                     Run(stop);
                 });
+            started = true;
         }
     }
 
     ~BindHelper()
     {
-        if (thread.joinable())
+        if (started)
         {
             thread.request_stop();
             posted.fetch_add(1, std::memory_order_seq_cst);
@@ -44,7 +46,9 @@ public:
         }
     }
 
-    [[nodiscard]] bool Available() const noexcept { return thread.joinable(); }
+    /// Asked per draw: a flag, not thread.joinable() (libc++ on Windows asks the kernel for the
+    /// thread's id there, a system call: 6.7 % of the recording thread, 2026-10-28).
+    [[nodiscard]] bool Available() const noexcept { return started; }
 
     /// True on the helper thread (its callees must not join it).
     [[nodiscard]] static bool OnHelper() noexcept { return on_helper; }
@@ -128,6 +132,7 @@ private:
     Task task = nullptr;
     void* context = nullptr;
     bool active = false;
+    bool started = false;
     alignas(64) std::atomic<u64> posted{0};
     alignas(64) std::atomic<u64> done{0};
     alignas(64) std::atomic<bool> sleeping{false};

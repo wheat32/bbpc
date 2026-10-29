@@ -34,6 +34,27 @@ private slots:
                  QDir::cleanPath(root.filePath(QStringLiteral("usr/share/bbpc"))));
     }
 
+    void hasOnlineModule_netModule_isTakenAsItIs()
+    {
+        QTemporaryDir root;
+        QVERIFY(PortPaths::hasOnlineModule({}, root.path()) == false);
+        QDir().mkpath(root.filePath(QStringLiteral("gpu")));
+        QFile module(root.filePath(QStringLiteral("gpu/libbbnet20.so")));
+        QVERIFY(module.open(QIODevice::WriteOnly));
+        module.close();
+        QVERIFY(PortPaths::hasOnlineModule({}, root.path()));
+        // BB_NET_MODULE names another file (the folder package's online/): that one counts.
+        QVERIFY(PortPaths::hasOnlineModule(root.filePath(QStringLiteral("online/libbbnet20.so")), root.path()) == false);
+    }
+
+    void upstreamVersion_versionJson_isItsUpstreamKey()
+    {
+        QVERIFY(PortPaths::upstreamVersion(QByteArray()).isEmpty());
+        QVERIFY(PortPaths::upstreamVersion(R"({"app_version": "0.7.3"})").isEmpty());
+        QCOMPARE(PortPaths::upstreamVersion(R"({"app_version": "0.7.3", "upstream_version": "0.7"})"),
+                 QStringLiteral("0.7"));
+    }
+
     void findPortDir_nothingAround_isEmpty()
     {
         QTemporaryDir root;

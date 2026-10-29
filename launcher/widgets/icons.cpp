@@ -46,6 +46,10 @@ IconSource source(Icons::Kind kind)
             return { "edit-copy", QStyle::SP_FileDialogContentsView };
         case Icons::Kind::Save:
             return { "document-save", QStyle::SP_DialogSaveButton };
+        case Icons::Kind::Add:
+            return { "list-add", QStyle::SP_FileDialogNewFolder };
+        case Icons::Kind::Trophy:
+            return { "starred", QStyle::SP_DialogYesButton };
     }
     return { "", QStyle::SP_FileIcon };
 }

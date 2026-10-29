@@ -339,3 +339,35 @@ QTextBrowser#aboutBrowser
 {
     background-color: palette(window);
 }
+
+/* === Trophies === */
+QLabel#trophyInfo
+{
+    color: #6c6068;
+    font-size: 12px;
+}
+
+QFrame#settingRow[locked="true"] QLabel#rowTitle,
+QFrame#settingRow[locked="true"] QLabel#rowSubtitle
+{
+    color: #a89da3;
+}
+
+QProgressBar#trophyProgress
+{
+    background-color: #f8f5f3;
+    border: 1px solid #d8cfca;
+    border-radius: 4px;
+    max-height: 8px;
+}
+
+QProgressBar#trophyProgress::chunk
+{
+    background-color: #9c2f2b;
+    border-radius: 3px;
+}
+
+QLineEdit[invalid="true"]
+{
+    border-color: #c0392b;
+}

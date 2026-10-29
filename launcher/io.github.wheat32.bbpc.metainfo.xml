@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream data for software centers and AppImage managers (Gear Lever, AppManager): without it
+     they named the package after whatever metadata the bundled libraries brought along (#287). -->
+<component type="desktop-application">
+  <id>io.github.wheat32.bbpc</id>
+  <name>bbpc</name>
+  <summary>Play Bloodborne natively on Linux from your own copy of the game</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-or-later</project_license>
+  <description>
+    <p>A native Linux port of Bloodborne (CUSA03173, version 1.09) with a launcher for the game
+    folder, the settings, mods and online play. It needs the player's own game files; none are
+    included. bbpc is a fork of bloodborne_pc (bbport) by deadinside28 and its contributors.</p>
+  </description>
+  <launchable type="desktop-id">io.github.wheat32.bbpc.desktop</launchable>
+  <url type="homepage">https://github.com/wheat32/bbpc</url>
+  <categories>
+    <category>Game</category>
+  </categories>
+</component>

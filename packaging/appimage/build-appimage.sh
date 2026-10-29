@@ -71,12 +71,14 @@ if [[ -n ${DLSS_SDK_ROOT:-} ]]; then
         compgen -G "${PORT_DIR}/bin/libnvidia-ngx-dlss.so.*" >/dev/null ||
         die "DLSS_SDK_ROOT is set, but the DLSS bridge, NVIDIA's library or its license was not installed"
     info "DLSS: the bridge and NVIDIA's library are in"
+    compgen -G "${PORT_DIR}/bin/libnvidia-ngx-dlssg.so.*" >/dev/null &&
+        info "DLSS Frame Generation: NVIDIA's library is in"
 fi
 # Debug info names the build environment and is most of the binaries' size; the symbols stay
 # for crash reports. NVIDIA's DLSS library stays as NVIDIA built it: NGX refuses a changed copy
 # (FAIL_NotImplemented, DLSS reported as unsupported).
 find "${PORT_DIR}/bin" -type f \( -name '*.so*' -o -perm -u+x \) ! -name 'libnvidia-ngx-dlss.so.*' \
-     -exec strip --strip-debug {} +
+     ! -name 'libnvidia-ngx-dlssg.so.*' -exec strip --strip-debug {} +
 strip --strip-debug "${APPDIR}/usr/bin/bbpc"
 
 # -- FSR 4.1.1 tools, prebuilt: the launcher's "Choose DLL..." then needs no compiler -----------
@@ -203,7 +205,8 @@ chmod +x "${APPDIR}/AppRun"
 
 # NGX loads only NVIDIA's own file: the packaged copy must be the SDK's, byte for byte.
 if [[ -n ${DLSS_SDK_ROOT:-} ]]; then
-    for library in "${PORT_DIR}"/bin/libnvidia-ngx-dlss.so.*; do
+    for library in "${PORT_DIR}"/bin/libnvidia-ngx-dlss.so.* "${PORT_DIR}"/bin/libnvidia-ngx-dlssg.so.*; do
+        [[ -e ${library} ]] || continue
         cmp -s "${library}" "${DLSS_SDK_ROOT}/lib/Linux_x86_64/rel/$(basename "${library}")" ||
             die "$(basename "${library}") in the AppDir differs from the DLSS SDK's: NGX would refuse it"
     done

@@ -4,6 +4,7 @@
 // arena's lock and the address space lock (an allocating sampler waited with them).
 
 #include "platform/videoout/stall_samples.h"
+#include "shim/bb_env.h"
 
 #include <algorithm>
 #include <array>
@@ -273,11 +274,7 @@ void Print(const Entry& entry, const std::vector<std::string>& maps)
 
 void OnFlip(double frame_ms)
 {
-    static const bool enabled = []
-    {
-        const char* env = std::getenv("BB_STALL_SAMPLES");
-        return env != nullptr && env[0] == '1';
-    }();
+    static const bool enabled = bb_env_on("BB_STALL_SAMPLES") != 0;
     if (enabled == false)
     {
         return;

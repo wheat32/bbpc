@@ -1,9 +1,11 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport cp: what packets do on the draw recording thread, in stream order with the draws
 // (Rasterizer::RunInOrder; here, after a drain, when the draw pipeline is off): fences, memory
 // writes and copies, occlusion results, flips.
 
 #include <chrono>
+#include "shim/bb_env.h"
 #include <cstdlib>
 #include <cstring>
 #include <thread>
@@ -118,11 +120,7 @@ void WriteLabel(void* address, u64 value, u32 num_bytes, BbFreeCheck::Source sou
 /// frees label objects after a timeout, late labels corrupt its heap.
 void MaybeDelay(u64 seq)
 {
-    static const bool delay = []
-    {
-        const char* env = std::getenv("BB_FENCE_DELAY_TEST");
-        return env != nullptr && env[0] == '1';
-    }();
+    static const bool delay = bb_env_on("BB_FENCE_DELAY_TEST");
     if (delay && seq != 0 && seq % 200 == 0)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(80));
@@ -156,64 +154,29 @@ void EventWriteEopTask(Vulkan::Rasterizer& rasterizer, const u8* data)
     }
     const u64 seq = BbFreeCheck::NextFenceSeq(); // their order in the stream (BB_FREE_CHECK)
     rasterizer.ProcessDownloadImages();
-    if (Vulkan::Rasterizer::HonestLabels())
+    // Written once the GPU has finished the work before it, as the hardware does: a timestamp
+    // or a label without an interrupt by the GPU itself; the rest after the GPU signals.
+    if (eop.Data() == DataSel::GpuClock64 && eop.Int() == IntSel::None &&
+        rasterizer.WriteTimestampOnGpu(eop.Address(), true))
     {
-        // Written once the GPU has finished the work before it, as the hardware does: a timestamp
-        // or a label without an interrupt by the GPU itself; the rest after the GPU signals.
-        if (eop.Data() == DataSel::GpuClock64 && eop.Int() == IntSel::None &&
-            rasterizer.WriteTimestampOnGpu(eop.Address(), true))
-        {
-            BbStats::eop_written.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-        if ((eop.Data() == DataSel::Data32 || eop.Data() == DataSel::Data64) && eop.Int() == IntSel::None &&
-            rasterizer.WriteLabelOnGpu(eop.Address(), eop.Value(), eop.Data() == DataSel::Data32 ? 4 : 8))
-        {
-            Diagnostics::NoteLabel(Diagnostics::LabelStep::GraphicsOnGpu, eop.Address(), eop.Value(),
-                                   eop.Data() == DataSel::Data32 ? 4 : 8);
-            BbStats::eop_written.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-        const bool writes = eop.Data() != DataSel::None;
-        rasterizer.SignalAfterGpu(
-            [eop, seq]
-            {
-                SignalEop(eop, seq);
-            },
-            writes ? eop.Address() : 0, eop.Value());
+        BbStats::eop_written.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    // Copies to guest memory on the copy threads precede the fence the guest sees.
-    // BB_ASYNC_FENCES=1 writes it once they are done instead of waiting (measured slower: the
-    // guest waits on these fences, and later fences stall it more than the wait costs).
-    static const bool async_fences = []
+    if ((eop.Data() == DataSel::Data32 || eop.Data() == DataSel::Data64) && eop.Int() == IntSel::None &&
+        rasterizer.WriteLabelOnGpu(eop.Address(), eop.Value(), eop.Data() == DataSel::Data32 ? 4 : 8))
     {
-        const char* env = std::getenv("BB_ASYNC_FENCES");
-        return env != nullptr && env[0] == '1';
-    }();
-    if (async_fences && BbToggle::Disabled(BbToggle::AsyncFences) == false)
-    {
-        BbCopy::AfterCopies(
-            [eop, seq]
-            {
-                SignalEop(eop, seq);
-            });
+        Diagnostics::NoteLabel(Diagnostics::LabelStep::GraphicsOnGpu, eop.Address(), eop.Value(),
+                               eop.Data() == DataSel::Data32 ? 4 : 8);
+        BbStats::eop_written.fetch_add(1, std::memory_order_relaxed);
+        return;
     }
-    else if (Vulkan::DrawPipe::OnStageB() && BbToggle::Disabled(BbToggle::RecorderFences) == false)
-    {
-        // The Vulkan recording thread signals it after the copies queued before it.
-        rasterizer.SignalAfterHostCopies(
-            [eop, seq]
-            {
-                SignalEop(eop, seq);
-            });
-    }
-    else
-    {
-        rasterizer.WaitHostCopies();
-        rasterizer.WaitDeferredSignals(); // labels in order: not before deferred ones
-        SignalEop(eop, seq);
-    }
+    const bool writes = eop.Data() != DataSel::None;
+    rasterizer.SignalAfterGpu(
+        [eop, seq]
+        {
+            SignalEop(eop, seq);
+        },
+        writes ? eop.Address() : 0, eop.Value());
 }
 
 namespace
@@ -228,8 +191,8 @@ void EventWriteEosTask(Vulkan::Rasterizer& rasterizer, const u8* data)
 {
     EventWriteEos eos;
     std::memcpy(&eos, data, sizeof(eos));
-    void* address = reinterpret_cast<void*>(eos.Address());
-    if (Vulkan::Rasterizer::HonestLabels() && eos.Command() == EventWriteEos::SIGNAL_FENCE)
+    auto* address = reinterpret_cast<void*>(eos.Address());
+    if (eos.Command() == EventWriteEos::SIGNAL_FENCE)
     {
         // End of the shader work: written once the GPU has finished it.
         rasterizer.ProcessDownloadImages();
@@ -247,7 +210,6 @@ void EventWriteEosTask(Vulkan::Rasterizer& rasterizer, const u8* data)
         return;
     }
     rasterizer.WaitHostCopies();
-    rasterizer.WaitDeferredSignals();
     rasterizer.ProcessDownloadImages();
     switch (eos.Command())
     {
@@ -257,18 +219,8 @@ void EventWriteEosTask(Vulkan::Rasterizer& rasterizer, const u8* data)
         case EventWriteEos::GDS_STORE:
         {
             ASSERT(eos.GdsDwords() == 1);
-            // BB_GUEST_IN_PLACE: a GPU copy from GDS in stream order, as the CP stores it.
-            if (VideoCore::GuestInPlace())
-            {
-                rasterizer.CopyBuffer(eos.Address(), eos.GdsIndex() * sizeof(u32), sizeof(u32), false, true);
-                break;
-            }
-            rasterizer.Finish();
-            const u32 value = rasterizer.ReadDataFromGds(eos.GdsIndex());
-            BbFreeCheck::Check(eos.Address(), sizeof(u32), &value, BbFreeCheck::EosGds);
-            BbFreeCheck::NoteFenceWriting(eos.Address());
-            *static_cast<u32*>(address) = value;
-            BbFreeCheck::NoteFenceWritten(eos.Address());
+            // A GPU copy from GDS in stream order, as the CP stores it.
+            rasterizer.CopyBuffer(eos.Address(), eos.GdsIndex() * sizeof(u32), sizeof(u32), false, true);
             break;
         }
         default:
@@ -299,7 +251,6 @@ void DmaDataTask(Vulkan::Rasterizer& rasterizer, const u8* data)
     if (dma.DstIsMemory() && rasterizer.DmaMayWriteOnCpu(dma.DstAddress(), dma.Bytes()))
     {
         rasterizer.WaitHostCopiesFor(dma.DstAddress(), dma.Bytes());
-        rasterizer.WaitDeferredSignals();
     }
     if (dma.Src() == DmaData::Immediate && dma.Dst() == DmaData::Gds)
     {
@@ -341,7 +292,6 @@ void CopyDataTask(Vulkan::Rasterizer& rasterizer, const u8* data)
     if (task.dst_gds == false && rasterizer.DmaMayWriteOnCpu(task.dst, task.num_bytes))
     {
         rasterizer.WaitHostCopiesFor(task.dst, task.num_bytes);
-        rasterizer.WaitDeferredSignals();
     }
     if (task.fill)
     {
@@ -356,16 +306,15 @@ void CopyDataTask(Vulkan::Rasterizer& rasterizer, const u8* data)
 
 void FlipTask(Vulkan::Rasterizer& rasterizer, const u8*)
 {
-    rasterizer.WaitDeferredSignals();
     // BB_EXP_FLIP_FINISH=1 (experiment): the flip is signaled once the GPU has run the frame.
-    static const bool finish = std::getenv("BB_EXP_FLIP_FINISH") != nullptr;
+    static const bool finish = bb_env("BB_EXP_FLIP_FINISH") != nullptr;
     if (finish)
     {
         rasterizer.Finish();
     }
     // BB_EXP_FLIP_LAG=1 (experiment): the GPU has finished the frame before this one (one frame in
     // flight at most).
-    static const bool lag = std::getenv("BB_EXP_FLIP_LAG") != nullptr;
+    static const bool lag = bb_env("BB_EXP_FLIP_LAG") != nullptr;
     if (lag)
     {
         rasterizer.WaitPreviousFrame();
@@ -397,7 +346,7 @@ void WriteDataTask(Vulkan::Rasterizer& rasterizer, const u8* data)
     const VAddr address = WriteData::Address(body);
     const u32 bytes = WriteData::Bytes(body_words);
     const u32* values = WriteData::Data(body);
-    // BB_GUEST_IN_PLACE: the GPU writes it in stream order, as the command processor does. A CPU
+    // The GPU writes it in stream order, as the command processor does. A CPU
     // store now lands before the GPU has run the work before it, which may still read the old
     // value (the game orders such writes after its own fences, taken as met in stream order).
     if (rasterizer.WriteDataOnGpu(address, values, bytes))
@@ -407,7 +356,6 @@ void WriteDataTask(Vulkan::Rasterizer& rasterizer, const u8* data)
     // Copies deferred to the recording thread that read the range precede the write; so do the
     // fences deferred to it (the guest sees this write).
     rasterizer.WaitHostCopiesFor(address, bytes);
-    rasterizer.WaitDeferredSignals();
     BbFreeCheck::Check(address, bytes, values, BbFreeCheck::WriteData);
     BbWriteLog::Note(address, values, bytes, BbWriteLog::WriteData);
     std::memcpy(reinterpret_cast<void*>(address), values, bytes);

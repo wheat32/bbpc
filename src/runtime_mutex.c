@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* Linux pthread-backed opaque PS4 mutex handles. No guest threads yet. */
 #define _GNU_SOURCE
 #include "runtime.h"
@@ -92,6 +94,17 @@ static ABI int32_t attr_destroy(GuestAttr** attr)
     *attr = nullptr;
     return 0;
 }
+/* A refused init, said once per cause: the game takes ENOMEM and EAGAIN quietly and only panics
+ * at the mutex's first lock ("Mutex is not initialized", the opening movie on Windows, 2026-10-27). */
+static void init_failed(const char* step, int e, int type)
+{
+    static int said;
+    if (said++ < 8)
+    {
+        fprintf(stderr, "Runtime: scePthreadMutexInit refused at %s: host error %d (type %d, %zu made so far)\n", step,
+                e, type, created);
+    }
+}
 static ABI int32_t mutex_init(GuestMutex** out, GuestAttr** attr, const char* name)
 {
     (void)name;
@@ -107,20 +120,26 @@ static ABI int32_t mutex_init(GuestMutex** out, GuestAttr** attr, const char* na
     GuestMutex* mutex = malloc(sizeof(*mutex));
     if (mutex == nullptr)
     {
+        init_failed("malloc", ENOMEM, type);
         return orbis_error(ENOMEM);
     }
     pthread_mutexattr_t native_attr;
     int e = pthread_mutexattr_init(&native_attr);
     if (e)
     {
+        init_failed("pthread_mutexattr_init", e, type);
         free(mutex);
         return orbis_error(e);
     }
     int native_type = type == 2 ? PTHREAD_MUTEX_RECURSIVE : type == 3 ? PTHREAD_MUTEX_NORMAL : PTHREAD_MUTEX_ERRORCHECK;
     e = pthread_mutexattr_settype(&native_attr, native_type);
-    if (e == 0)
+    if (e)
     {
-        e = pthread_mutex_init(&mutex->native, &native_attr);
+        init_failed("pthread_mutexattr_settype", e, type);
+    }
+    if (e == 0 && (e = pthread_mutex_init(&mutex->native, &native_attr)))
+    {
+        init_failed("pthread_mutex_init", e, type);
     }
     pthread_mutexattr_destroy(&native_attr);
     if (e)

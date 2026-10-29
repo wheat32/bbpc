@@ -74,7 +74,7 @@ GameEnvironment::Location location()
     where.dataDir = PortPaths::dataDir();
     where.packaged = PortPaths::packaged();
     where.buildDir = PortPaths::buildDir();
-    where.onlineModule = QFileInfo(PortPaths::binariesDir() + QStringLiteral("/gpu/libbbnet20.so")).isFile();
+    where.onlineModule = PortPaths::hasOnlineModule();
     return where;
 }
 

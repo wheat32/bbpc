@@ -13,41 +13,45 @@
 
 AdvancedPage::AdvancedPage(const LauncherSettings& settings, const PortIni&, QWidget* parent) : LauncherPage(parent)
 {
+    // 0.7 has one memory model: the 0.3 synchronization, the readback and pre-upload choices are
+    // gone (BB_READBACKS still works as an extra variable).
     SettingsGroup* performance = new SettingsGroup(tr("Performance"));
-    m_pipeRow = new ChoiceRow(tr("Two-stage GPU pipeline"), tr("20-30% faster; turn it off if the game is unstable"),
+    m_pipeRow = new ChoiceRow(tr("Two-stage GPU pipeline"),
+                              tr("Command decoding and draw recording on separate threads: 20-30% faster; turn it off "
+                                 "if the game is unstable"),
                               Choices::drawPipe(), settings.drawPipe);
-    m_readbacksRow = new ChoiceRow(tr("GPU data readbacks by the CPU"), {}, Choices::readbacks(), settings.readbacks);
-    m_preuploadRow = new ChoiceRow(tr("Background pre-upload into VRAM"), tr("Fewer hitches when areas stream in"),
-                                   Choices::preupload(), settings.preupload);
-    for (ChoiceRow* row : { m_pipeRow, m_readbacksRow, m_preuploadRow })
-    {
-        connect(row, &ChoiceRow::valueChanged, this, &AdvancedPage::changed);
-        performance->addRow(row);
-    }
+    connect(m_pipeRow, &ChoiceRow::valueChanged, this, &AdvancedPage::changed);
+    performance->addRow(m_pipeRow);
     addGroup(performance);
 
-    SettingsGroup* developer = new SettingsGroup(tr("Developer"));
-    m_mangohudRow = new SwitchRow(QStringLiteral("MangoHud"), tr("Its Vulkan layer must be installed (Arch: mangohud)"),
+    SettingsGroup* developer = new SettingsGroup(tr("Developer"), tr("Logs and diagnostics: for stutters and crashes"));
+    m_mangohudRow = new SwitchRow(QStringLiteral("MangoHud"),
+                                  tr("Its Vulkan layer must be installed (Arch: mangohud). Shows the game's RAM and VRAM "
+                                     "too unless MANGOHUD_CONFIG is set"),
                                   settings.mangohud);
     m_saveLogRow = new SwitchRow(tr("Save the log and statistics to a file"),
                                  tr("Into the logs folder of the data folder: to look into stutters and crashes"),
                                  settings.saveLog);
     m_crashDiagRow = new SwitchRow(tr("Crash diagnostics"),
-                                   tr("Checks the game's heap and logs writes into its memory; a little slower"),
+                                   tr("Checks the game's heap and the writes into its memory; a little slower"),
                                    settings.crashDiag);
-    m_as03Row = new SwitchRow(tr("Synchronization as in 0.3"),
-                              tr("For finding regressions: the old memory model and copy waits as released in 0.3"),
-                              settings.as03);
-    m_statsRow = new SwitchRow(tr("Frame statistics in the log"), QStringLiteral("BB_FRAME_STATS"), settings.frameStats);
-    m_profileRow = new SwitchRow(tr("GPU profile in the log"), QStringLiteral("BB_GPU_PROFILE"), settings.gpuProfile);
-    m_validationRow = new SwitchRow(tr("Vulkan validation layers"), tr("Much slower"), settings.vkValidation);
-    for (SwitchRow* row : { m_mangohudRow, m_saveLogRow, m_crashDiagRow, m_as03Row, m_statsRow, m_profileRow, m_validationRow })
+    m_statsRow = new SwitchRow(tr("Frame statistics in the log"),
+                               tr("Every few seconds: FPS, the worst frame, thread load, memory (BB_FRAME_STATS)"),
+                               settings.frameStats);
+    m_profileRow = new SwitchRow(tr("GPU profile in the log"),
+                                 tr("The GPU time of each pass; slows the GPU down noticeably itself (BB_GPU_PROFILE)"),
+                                 settings.gpuProfile);
+    m_validationRow = new SwitchRow(tr("Vulkan validation layers"), tr("Checks of the Vulkan calls; much slower"),
+                                    settings.vkValidation);
+    for (SwitchRow* row : { m_mangohudRow, m_saveLogRow, m_crashDiagRow, m_statsRow, m_profileRow, m_validationRow })
     {
         connect(row, &SwitchRow::toggled, this, &AdvancedPage::changed);
         developer->addRow(row);
     }
     m_extraRow = new EntryRow(tr("Extra variables"), settings.extraEnv);
     m_extraRow->setPlaceholder(tr("NAME=value, separated by spaces"));
+    m_extraRow->setSubtitle(tr("For experiments; docs/ENVIRONMENT.md lists every BB_* variable, and the log's "
+                               "Environment: line names unknown ones"));
     connect(m_extraRow, &EntryRow::textEdited, this, &AdvancedPage::changed);
     developer->addRow(m_extraRow);
     addGroup(developer);
@@ -70,8 +74,12 @@ AdvancedPage::AdvancedPage(const LauncherSettings& settings, const PortIni&, QWi
     launcher->addRow(dataRow);
     SettingRow* settingsRow = new SettingRow(tr("Launcher settings"), AppConfig::configFile());
     launcher->addRow(settingsRow);
+    const QString portVersion = PortPaths::portVersion();
     SettingRow* aboutRow = new SettingRow(tr("bbpc %1").arg(QCoreApplication::applicationVersion()),
-                                          tr("A fork of bloodborne_pc (bbport) by deadinside28 and its contributors"));
+                                          portVersion.isEmpty()
+                                              ? tr("A fork of bloodborne_pc (bbport) by deadinside28 and its contributors")
+                                              : tr("A fork of bloodborne_pc (bbport %1) by deadinside28 and its contributors")
+                                                    .arg(portVersion));
     QPushButton* aboutButton = new QPushButton(tr("About..."), aboutRow);
     aboutRow->addSuffix(aboutButton);
     connect(aboutButton, &QPushButton::clicked, this, [this]()
@@ -87,12 +95,9 @@ AdvancedPage::AdvancedPage(const LauncherSettings& settings, const PortIni&, QWi
 void AdvancedPage::store(LauncherSettings& settings, PortIni&) const
 {
     settings.drawPipe = m_pipeRow->value();
-    settings.readbacks = m_readbacksRow->value();
-    settings.preupload = m_preuploadRow->value();
     settings.mangohud = m_mangohudRow->isOn();
     settings.saveLog = m_saveLogRow->isOn();
     settings.crashDiag = m_crashDiagRow->isOn();
-    settings.as03 = m_as03Row->isOn();
     settings.frameStats = m_statsRow->isOn();
     settings.gpuProfile = m_profileRow->isOn();
     settings.vkValidation = m_validationRow->isOn();

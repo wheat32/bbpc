@@ -26,6 +26,7 @@
 #include "pages/logPage.h"
 #include "pages/modsPage.h"
 #include "pages/onlinePage.h"
+#include "pages/trophiesPage.h"
 #include "process/groupProcess.h"
 #include "themeManager.h"
 #include "widgets/toastNotification.h"
@@ -104,6 +105,7 @@ MainWindow::MainWindow()
     m_graphicsPage = new GraphicsPage(settings, m_ini);
     m_controlsPage = new ControlsPage(settings, m_ini);
     m_modsPage = new ModsPage(settings, m_ini);
+    m_trophiesPage = new TrophiesPage(settings, m_ini);
     m_onlinePage = new OnlinePage(settings, m_ini);
     m_advancedPage = new AdvancedPage(settings, m_ini);
     m_logPage = new LogPage();
@@ -112,11 +114,21 @@ MainWindow::MainWindow()
     addPage(Page::Graphics, tr("Graphics"), m_graphicsPage);
     addPage(Page::Controls, tr("Controls"), m_controlsPage);
     addPage(Page::Mods, tr("Mods and patches"), m_modsPage);
+    addPage(Page::Trophies, tr("Trophies"), m_trophiesPage);
     addPage(Page::Online, tr("Online"), m_onlinePage);
     addPage(Page::Advanced, tr("Advanced"), m_advancedPage);
     addPage(Page::Log, tr("Log"), m_logPage);
-    m_settingsPages = { m_gamePage, m_displayPage, m_graphicsPage, m_controlsPage, m_modsPage, m_onlinePage, m_advancedPage };
+    m_settingsPages = { m_gamePage, m_displayPage, m_graphicsPage, m_controlsPage, m_modsPage, m_trophiesPage, m_onlinePage,
+                        m_advancedPage };
     connect(m_sidebar, &QListWidget::currentRowChanged, m_stack, &QStackedWidget::setCurrentIndex);
+    connect(m_sidebar, &QListWidget::currentRowChanged, this, [this](int row)
+    {
+        // The game may have unlocked some since the page was last shown.
+        if (row == static_cast<int>(Page::Trophies))
+        {
+            m_trophiesPage->refresh();
+        }
+    });
 
     for (LauncherPage* page : m_settingsPages)
     {
@@ -130,6 +142,10 @@ MainWindow::MainWindow()
         updateStatus();
     });
     connect(m_gamePage, &GamePage::userDirChanged, m_graphicsPage, &GraphicsPage::setUserDir);
+    connect(m_gamePage, &GamePage::userDirChanged, m_trophiesPage, &TrophiesPage::setUserDir);
+    connect(m_gamePage, &GamePage::systemLanguageChanged, m_trophiesPage, &TrophiesPage::setLanguage);
+    connect(m_gamePage, &GamePage::gpusChanged, m_graphicsPage, &GraphicsPage::setGpus);
+    connect(m_graphicsPage, &GraphicsPage::frameGenerationChanged, m_gamePage, &GamePage::setFrameGeneration);
     connect(m_displayPage, &DisplayPage::outputResolutionChanged, m_graphicsPage, &GraphicsPage::setOutputResolution);
     connect(m_graphicsPage, &GraphicsPage::logLine, m_logPage, &LogPage::appendLine);
     connect(m_graphicsPage, &GraphicsPage::buildRunningChanged, this, [this](bool running)
@@ -153,6 +169,9 @@ MainWindow::MainWindow()
     m_hasGame = m_gamePage->hasGame();
     m_graphicsPage->setUserDir(m_gamePage->userDir());
     m_graphicsPage->setOutputResolution(m_displayPage->outputResolution());
+    m_gamePage->setFrameGeneration(m_graphicsPage->frameGeneration());
+    m_trophiesPage->setLanguage(m_gamePage->systemLanguage());
+    m_trophiesPage->setUserDir(m_gamePage->userDir());
     showPage(Page::Game);
     updateStatus();
 }
@@ -206,7 +225,7 @@ void MainWindow::updateStatus()
     }
     else if (m_building)
     {
-        m_status->setText(tr("Building FSR 4.1.1 (the game can start once it is done)"));
+        m_status->setText(tr("Building FSR 4.1 (the game can start once it is done)"));
     }
     else if (PortPaths::portDir().isEmpty())
     {
@@ -282,6 +301,8 @@ void MainWindow::gameFinished(int exitCode)
     DBG_GAME(QStringLiteral("The game exited with code ") + QString::number(exitCode));
     updateStatus();
     m_gamePage->refreshGameStatus();
+    // What this session unlocked, and the names once the game decrypted them.
+    m_trophiesPage->refresh();
 }
 
 void MainWindow::showToast(const QString& message)

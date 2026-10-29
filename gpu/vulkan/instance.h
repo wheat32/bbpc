@@ -1,9 +1,13 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport vulkan: the Vulkan instance, the chosen GPU and the logical device with what the port
 // enables on it: queues (graphics and present, a readback queue of a compute family), the VMA
 // allocator, and the device's capabilities as the renderer and the shader translator ask them.
 #pragma once
 
+#include <cstdlib>
+#include "shim/bb_env.h"
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -49,7 +53,14 @@ public:
     /// BB_READBACK_QUEUE=0), for reading back finished GPU writes without waiting behind frames.
     vk::Queue GetReadbackQueue() const { return readback_queue; }
     u32 GetReadbackQueueFamilyIndex() const { return readback_family; }
+    /// A second queue of that compute family for asynchronous compute (frame generation runs
+    /// there beside the next frame's graphics work): null when the family has one queue only or
+    /// unless BB_FG_ASYNC=1 (off by default: no gain measured). Submissions to it lock AsyncComputeMutex().
+    vk::Queue GetAsyncComputeQueue() const { return async_compute_queue; }
+    u32 GetComputeQueueFamilyIndex() const { return compute_family; }
+    std::mutex& AsyncComputeMutex() const { return async_compute_mutex; }
 
+    const vk::PhysicalDeviceProperties& GetProperties() const noexcept { return properties; }
     // Identity.
     u32 GetVendorID() const { return properties.vendorID; }
     vk::DriverId GetDriverID() const { return driver_id; }
@@ -72,7 +83,19 @@ public:
         }
         return false;
     }
-    bool IsIntegrated() const { return properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu; }
+    /// Unified memory: the GPU shares the system's memory (integrated GPUs, Steam Deck, ARM
+    /// handhelds, Apple silicon). The game's memory is then read in place, without VRAM mirrors
+    /// (docs/unified_memory.md). BB_UNIFIED_MEMORY=1/0 overrides the device type (a driver that
+    /// reports another, ports to other systems).
+    bool IsIntegrated() const
+    {
+        static const int forced = []
+        {
+            const char* env = bb_env("BB_UNIFIED_MEMORY");
+            return env != nullptr && *env ? (env[0] == '1' ? 1 : 0) : -1;
+        }();
+        return forced >= 0 ? forced == 1 : properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu;
+    }
 
     // Limits.
     vk::DeviceSize UniformMinAlignment() const { return properties.limits.minUniformBufferOffsetAlignment; }
@@ -112,6 +135,14 @@ public:
     bool IsTessellationSupported() const { return features.tessellationShader; }
     bool IsLogicOpSupported() const { return features.logicOp; }
     bool IsShaderFloat16Supported() const { return vk12_features.shaderFloat16; }
+    /// Low latency (NVIDIA Reflex): VK_NV_low_latency2 with VK_KHR_present_id are enabled.
+    bool HasLowLatency() const { return ext.low_latency2; }
+    /// Low latency (AMD Anti-Lag 2): VK_AMD_anti_lag is enabled (not with VK_NV_low_latency2).
+    bool HasAntiLag() const { return ext.anti_lag; }
+    /// Buffers can be given the device address they had in an earlier session (the object motion
+    /// buffers: shaders embedding their addresses stay the same, and cached, across sessions).
+    bool HasBufferAddressReplay() const { return vk12_features.bufferDeviceAddressCaptureReplay; }
+    bool HasPresentId() const { return ext.present_id; }
     bool IsShaderFloat16Enabled() const { return vk12_features.shaderFloat16; }
     bool IsShaderInt8Supported() const { return vk12_features.shaderInt8; }
     bool IsBufferInt64AtomicsSupported() const { return vk12_features.shaderBufferInt64Atomics; }
@@ -124,6 +155,7 @@ public:
 
     // Extensions.
     bool IsMaintenance8Supported() const { return ext.maintenance_8; }
+    bool IsDeviceFaultSupported() const { return ext.device_fault; }
     bool IsBufferMarkerSupported() const { return ext.buffer_marker; }
     bool IsAttachmentFeedbackLoopLayoutSupported() const { return ext.feedback_loop; }
     bool IsCustomBorderColorSupported() const { return ext.custom_border_color; }
@@ -179,6 +211,8 @@ public:
     }
     /// FSR 4.1.1's FP8 matrix variant (RDNA4).
     bool IsFsr411Fp8Supported() const { return IsFsr411MatrixSupported() && ext.float8; }
+    /// FP8 cooperative matrices (RDNA4): AMD's own FP8 FSR 4 model (upscaler fsr_amd).
+    bool IsFloat8MatrixSupported() const { return ext.float8; }
 
     // Memory.
     bool CanReportMemoryUsage() const { return ext.memory_budget; }
@@ -212,7 +246,8 @@ private:
             explicit_vertex_parameter, barycentric, provoking_vertex, stencil_export, image_load_store_lod,
             amd_gcn_shader, trinary_minmax, nv_mixed_samples, amd_mixed_samples, atomic_float, atomic_float2,
             workgroup_layout, view_2d_of_3d, image_view_min_lod, memory_budget, memory_fd, dma_buf, memory_host,
-            compute_derivatives, mixed_float_dot, cooperative_matrix, float8, shader_clock, guest_uncached;
+            compute_derivatives, mixed_float_dot, cooperative_matrix, float8, shader_clock, guest_uncached, present_id,
+            low_latency2, anti_lag, device_fault;
     };
 
     vk::UniqueInstance instance;
@@ -224,6 +259,9 @@ private:
     vk::Queue readback_queue;
     u32 graphics_family = 0;
     u32 readback_family = NO_FAMILY;
+    u32 compute_family = NO_FAMILY;
+    vk::Queue async_compute_queue;
+    mutable std::mutex async_compute_mutex;
 
     vk::PhysicalDeviceProperties properties;
     vk::PhysicalDeviceMemoryProperties memory_properties;
@@ -257,5 +295,6 @@ private:
 /// Memory statistics: device-local VMA blocks and the allocations in them (the difference is
 /// free space VMA keeps).
 void VmaDeviceUsage(u64& block_bytes, u64& allocation_bytes);
+void VmaDeviceBudget(u64& usage_bytes, u64& budget_bytes); ///< the driver's VRAM usage, budget
 
 } // namespace Vulkan

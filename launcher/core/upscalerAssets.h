@@ -4,7 +4,8 @@
 #include <QString>
 
 // UpscalerAssets - what the upscalers need beyond the port itself: the FSR 4.1.1 model built from
-// the user's own AMD DLL (tools/fsr4cap), and NVIDIA's DLSS runtime library.
+// the user's own AMD DLL (tools/fsr4cap), and NVIDIA's DLSS runtime libraries (Super Resolution
+// and Frame Generation).
 namespace UpscalerAssets
 {
     // The folder the FSR 4.1.1 assets are read from, as run.sh looks for them.
@@ -15,20 +16,26 @@ namespace UpscalerAssets
     // Performance (4) its own variant.
     QString fsr411Problem(const QString& directory, const QString& output, int preset);
 
-    // NVIDIA's DLSS runtime: libnvidia-ngx-dlss.so.<version>, from the DLSS SDK
-    // (lib/Linux_x86_64/rel); a game's nvngx_dlss.dll is Windows-only.
+    // NVIDIA's DLSS runtime: libnvidia-ngx-dlss.so.<version> (Super Resolution) and
+    // libnvidia-ngx-dlssg.so.<version> (Frame Generation, SDK 310.7 or newer, GeForce RTX 40 and
+    // newer), from the DLSS SDK (lib/Linux_x86_64/rel); a game's nvngx_dlss.dll is Windows-only.
     inline const QString NGX_PREFIX = QStringLiteral("libnvidia-ngx-dlss.so.");
+    inline const QString NGX_FG_PREFIX = QStringLiteral("libnvidia-ngx-dlssg.so.");
     inline const QString DLSS_SDK_URL = QStringLiteral("https://github.com/NVIDIA/DLSS/tree/main/lib/Linux_x86_64/rel");
 
-    // The DLSS runtime libraries in directory, the newest version last.
-    QFileInfoList ngxLibraries(const QString& directory);
+    // The DLSS runtime libraries of one kind (prefix: NGX_PREFIX or NGX_FG_PREFIX) in directory,
+    // the newest version last.
+    QFileInfoList ngxLibraries(const QString& directory, const QString& prefix = NGX_PREFIX);
 
-    // The version part of a libnvidia-ngx-dlss.so.<version> file name.
+    // The version part of a libnvidia-ngx-dlss(g).so.<version> file name.
     QString ngxVersion(const QFileInfo& library);
 
-    // The DLSS runtime the game uses (gpu/upscale/vk_dlss.cpp): the player's own newest one, else
-    // the package's newest; an empty QFileInfo when there is none.
-    QFileInfo ngxInUse(const QString& ownDirectory, const QString& packageDirectory);
+    // Which of NVIDIA's libraries a file name is: NGX_PREFIX, NGX_FG_PREFIX, or an empty string.
+    QString ngxPrefixOf(const QString& fileName);
+
+    // The DLSS runtime of one kind the game uses (gpu/upscale/vk_dlss.cpp): the player's own newest
+    // one, else the package's newest; an empty QFileInfo when there is none.
+    QFileInfo ngxInUse(const QString& ownDirectory, const QString& packageDirectory, const QString& prefix = NGX_PREFIX);
 
     // The DLSS generation the game shows ("4.5") for a library version and a preset (0 Native AA
     // .. 4 Ultra Performance, DLSS's quality modes): gpu/upscale/dlss_generation.h. Empty when

@@ -1,7 +1,10 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
+// SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: shadPS4 settings used by the video core, read once from BB_* environment
 // variables (defaults match shadPS4 except the pipeline cache, which is on).
 #pragma once
 #include <algorithm>
+#include "shim/bb_env.h"
 #include <cstdlib>
 #include <string>
 #include "common/types.h"
@@ -23,12 +26,12 @@ public:
     }
     static bool Flag(const char* name, bool fallback)
     {
-        const char* v = std::getenv(name);
+        const char* v = bb_env(name);
         return v != nullptr ? (v[0] == '1' || v[0] == 'y' || v[0] == 't') : fallback;
     }
     static long Number(const char* name, long fallback)
     {
-        const char* v = std::getenv(name);
+        const char* v = bb_env(name);
         return v != nullptr ? std::strtol(v, nullptr, 10) : fallback;
     }
     s32 GetGpuId()
@@ -48,7 +51,7 @@ public:
     }
     std::string GetPresentMode()
     {
-        const char* v = std::getenv("BB_PRESENT_MODE");
+        const char* v = bb_env("BB_PRESENT_MODE");
         return v != nullptr ? v : "Mailbox";
     }
     // bbport: Relaxed by default: without readbacks FaceGen reads stale GPU-written vertices

@@ -1,15 +1,24 @@
 #include "gamePage.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonObject>
 #include <QLabel>
+#include <QPushButton>
+#include <QStandardPaths>
 #include <QToolButton>
 
 #include "core/choices.h"
+#include "core/desktopShortcut.h"
 #include "core/gameEnvironment.h"
+#include "core/graphicsSettings.h"
+#include "core/hostEnvironment.h"
 #include "core/portPaths.h"
 #include "process/portQueries.h"
+#include "process/processRunner.h"
 #include "widgets/choiceCombo.h"
 #include "widgets/settingRows.h"
 #include "widgets/uiHelpers.h"
@@ -18,6 +27,9 @@ namespace
 {
 constexpr int GAME_CHECK_TIMEOUT_MS = 60000;
 constexpr int GPU_QUERY_TIMEOUT_MS = 10000;
+constexpr int TRUST_TIMEOUT_MS = 5000;
+const QString APP_ICON = QStringLiteral(":/assets/app-icon.svg");
+const QString ICON_THEME_NAME = QStringLiteral("io.github.wheat32.bbpc");
 constexpr double FPS_LIMIT_MIN = LauncherSettings::NO_FPS_LIMIT;
 constexpr double FPS_LIMIT_MAX = 480;
 constexpr double FPS_LIMIT_STEP = 1;
@@ -75,12 +87,13 @@ QString problemText(const QJsonObject& problem)
 }
 } // namespace
 
-GamePage::GamePage(const LauncherSettings& settings, const PortIni&, QWidget* parent)
+GamePage::GamePage(const LauncherSettings& settings, const PortIni& ini, QWidget* parent)
     : LauncherPage(parent), m_gameDir(settings.gameDir), m_customUserDir(settings.userDir), m_savedGpu(settings.gpu)
 {
-    SettingsGroup* game = new SettingsGroup(tr("Game"));
+    SettingsGroup* game = new SettingsGroup(tr("Game"), tr("Where the game and the saves are, and its languages"));
 
     m_gameRow = new SettingRow(tr("Game folder (CUSA03173)"));
+    m_gameRow->setToolTip(tr("The unpacked game with the 1.09 update: the folder holding eboot.bin and dvdroot_ps4"));
     m_gameStatus = UiHelpers::statusIcon(m_gameRow);
     m_gameRow->addPrefix(m_gameStatus);
     QToolButton* chooseGame = Icons::button(Icons::Kind::FolderOpen, tr("Choose the folder with eboot.bin"), m_gameRow);
@@ -96,6 +109,7 @@ GamePage::GamePage(const LauncherSettings& settings, const PortIni&, QWidget* pa
 
     // Saves and the shader cache: user/ in the data folder unless another is chosen.
     m_userRow = new SettingRow(tr("Saves folder"));
+    m_userRow->setToolTip(tr("Saves, trophies and the shader cache. By default the user folder in the data folder"));
     m_userStatus = UiHelpers::statusIcon(m_userRow);
     m_userRow->addPrefix(m_userStatus);
     QToolButton* chooseUser = Icons::button(Icons::Kind::FolderOpen, tr("Choose the saves folder"), m_userRow);
@@ -118,22 +132,38 @@ GamePage::GamePage(const LauncherSettings& settings, const PortIni&, QWidget* pa
     });
     game->addRow(m_userRow);
 
-    m_languageRow = new ChoiceRow(tr("Game language"), tr("The language of the game's own text (all 21 it has)"),
-                                  Choices::gameLanguages(), settings.language);
-    connect(m_languageRow, &ChoiceRow::valueChanged, this, &GamePage::changed);
+    m_languageRow = new ChoiceRow(tr("System language"),
+                                  tr("The console language the game sees: it decides the menu language and the confirm "
+                                     "button"),
+                                  Choices::systemLanguages(), settings.language);
+    connect(m_languageRow, &ChoiceRow::valueChanged, this, [this](const QString& language)
+    {
+        emit systemLanguageChanged(language);
+        emit changed();
+    });
     game->addRow(m_languageRow);
+    m_textLanguageRow = new ChoiceRow(tr("Game text language"),
+                                      tr("Any language the game's files have, whatever the copy's region and the save"),
+                                      Choices::gameTextLanguages(), ini.value(QStringLiteral("game_text_language")));
+    connect(m_textLanguageRow, &ChoiceRow::valueChanged, this, &GamePage::changed);
+    game->addRow(m_textLanguageRow);
+    m_voiceLanguageRow = new ChoiceRow(tr("Voice language"),
+                                       tr("The voices from the game's files (when the copy has that language)"),
+                                       Choices::gameVoiceLanguages(), ini.value(QStringLiteral("game_voice_language")));
+    connect(m_voiceLanguageRow, &ChoiceRow::valueChanged, this, &GamePage::changed);
+    game->addRow(m_voiceLanguageRow);
+
+    // A menu entry and a desktop icon that start the game directly (--play).
+    SettingRow* shortcutRow = new SettingRow(tr("Desktop shortcut"),
+                                             tr("Starts the game at once, with the saved settings, patches and mods: a "
+                                                "menu entry and an icon on the desktop"));
+    QPushButton* shortcutButton = new QPushButton(tr("Create"), shortcutRow);
+    shortcutRow->addSuffix(shortcutButton);
+    connect(shortcutButton, &QPushButton::clicked, this, &GamePage::createShortcut);
+    game->addRow(shortcutRow);
     addGroup(game);
 
-    SettingsGroup* mode = new SettingsGroup(tr("Mode"));
-    m_memoryModelRow = new ChoiceRow(tr("Memory and translation model"),
-                                     tr("The new one: the GPU works with the game's memory directly, as in a PC game, "
-                                        "and graphics commands are translated rather than emulated. The old one: the "
-                                        "memory model of 0.3 with all the fixes. A driver that fails the startup check "
-                                        "gets the old one"),
-                                     Choices::memoryModels(), settings.memoryModel);
-    connect(m_memoryModelRow, &ChoiceRow::valueChanged, this, &GamePage::changed);
-    mode->addRow(m_memoryModelRow);
-
+    SettingsGroup* gpu = new SettingsGroup(tr("GPU"));
     m_gpuRow = new ChoiceRow(tr("GPU"), tr("On a laptop with two GPUs, pick the discrete one; applies when the game starts"));
     QToolButton* refreshGpus = Icons::button(Icons::Kind::Refresh, tr("Refresh the list"), m_gpuRow);
     m_gpuRow->addSuffix(refreshGpus);
@@ -143,18 +173,35 @@ GamePage::GamePage(const LauncherSettings& settings, const PortIni&, QWidget* pa
         m_savedGpu = value;
         emit changed();
     });
-    mode->addRow(m_gpuRow);
-    addGroup(mode);
+    gpu->addRow(m_gpuRow);
+    addGroup(gpu);
 
-    SettingsGroup* frames = new SettingsGroup(tr("Frame rate"));
-    m_fpsRow = new ChoiceRow(tr("Mode"), tr("Which frame rate patch to apply to the game"), Choices::fpsModes(),
-                             settings.fpsMode);
+    SettingsGroup* frames = new SettingsGroup(tr("Frame rate and latency"));
+    m_fpsRow = new ChoiceRow(tr("Mode"), tr("Which frame rate patch the game gets (physics and animations stay right)"),
+                             Choices::fpsModes(), settings.fpsMode);
     connect(m_fpsRow, &ChoiceRow::valueChanged, this, &GamePage::changed);
     frames->addRow(m_fpsRow);
-    m_fpsLimitRow = new SpinRow(tr("FPS limit"), tr("0: no limit; set a number to cap the frame rate"), FPS_LIMIT_MIN,
-                                FPS_LIMIT_MAX, FPS_LIMIT_STEP, FPS_LIMIT_DECIMALS, settings.fpsLimit);
+    m_fpsLimitRow = new SpinRow(tr("FPS limit"), tr("0: no limit. A cap a little under what the PC reaches gives the "
+                                                    "smoothest picture"),
+                                FPS_LIMIT_MIN, FPS_LIMIT_MAX, FPS_LIMIT_STEP, FPS_LIMIT_DECIMALS, settings.fpsLimit);
     connect(m_fpsLimitRow, &SpinRow::valueChanged, this, &GamePage::changed);
     frames->addRow(m_fpsLimitRow);
+    // NVIDIA Reflex or AMD Anti-Lag 2 (render/vk_low_latency); nothing changes on other drivers.
+    m_frameGeneration = GraphicsSettings::frameGenerationChoice(ini.value(QStringLiteral("frame_generation")),
+                                                                ini.value(QStringLiteral("frame_generation_multiplier")));
+    m_lowLatencyRow = new ChoiceRow(tr("Low latency (NVIDIA Reflex / AMD Anti-Lag 2)"),
+                                    tr("The game waits for the driver before each frame, so that frames do not pile up "
+                                       "before the GPU: less input lag. NVIDIA: Reflex, driver 550 and newer; AMD and "
+                                       "Intel: Anti-Lag 2 (Boost is the same as On). With DLSS frame generation always "
+                                       "at least On"),
+                                    Choices::lowLatency(),
+                                    GraphicsSettings::lowLatency(ini.value(QStringLiteral("low_latency")), m_frameGeneration));
+    connect(m_lowLatencyRow, &ChoiceRow::valueChanged, this, [this]()
+    {
+        enforceLowLatency();
+        emit changed();
+    });
+    frames->addRow(m_lowLatencyRow);
     addGroup(frames);
     finish();
 
@@ -183,15 +230,76 @@ QString GamePage::userDir() const
     return PortPaths::dataDir() + QStringLiteral("/user");
 }
 
-void GamePage::store(LauncherSettings& settings, PortIni&) const
+QString GamePage::systemLanguage() const
+{
+    return m_languageRow->value();
+}
+
+void GamePage::store(LauncherSettings& settings, PortIni& ini) const
 {
     settings.gameDir = m_gameDir;
     settings.userDir = m_customUserDir;
     settings.language = m_languageRow->value();
-    settings.memoryModel = m_memoryModelRow->value();
     settings.gpu = m_savedGpu;
     settings.fpsMode = m_fpsRow->value();
     settings.fpsLimit = static_cast<int>(m_fpsLimitRow->value());
+    ini.setValue(QStringLiteral("game_text_language"), m_textLanguageRow->value());
+    ini.setValue(QStringLiteral("game_voice_language"), m_voiceLanguageRow->value());
+    ini.setValue(QStringLiteral("low_latency"), GraphicsSettings::lowLatency(m_lowLatencyRow->value(), m_frameGeneration));
+}
+
+void GamePage::setFrameGeneration(const QString& choice)
+{
+    m_frameGeneration = choice;
+    enforceLowLatency();
+}
+
+void GamePage::enforceLowLatency()
+{
+    // What is shown is what runs: the game keeps low latency on with DLSS Frame Generation.
+    const QString effective = GraphicsSettings::lowLatency(m_lowLatencyRow->value(), m_frameGeneration);
+    if (effective != m_lowLatencyRow->value())
+    {
+        m_lowLatencyRow->combo()->setValue(effective);
+    }
+}
+
+void GamePage::createShortcut()
+{
+    const QStringList command = DesktopShortcut::playCommand(qEnvironmentVariable("APPIMAGE"),
+                                                             QCoreApplication::applicationFilePath());
+    // The launcher's own icon, by its path: the icon theme may not have it (an AppImage).
+    QString icon = ICON_THEME_NAME;
+    QFile resource(APP_ICON);
+    const QString iconPath = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+                           + QStringLiteral("/icons/hicolor/scalable/apps/") + DesktopShortcut::ICON_NAME;
+    if (resource.open(QIODevice::ReadOnly) && DesktopShortcut::writeIcon(resource.readAll(), iconPath))
+    {
+        icon = iconPath;
+    }
+    const QStringList folders = DesktopShortcut::folders(QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation),
+                                                         QStandardPaths::writableLocation(QStandardPaths::DesktopLocation),
+                                                         QDir::homePath());
+    const DesktopShortcut::Result result = DesktopShortcut::write(DesktopShortcut::entry(command, icon), folders);
+    if (result.written.isEmpty())
+    {
+        emit toast(tr("Could not create the shortcut: %1").arg(result.error));
+        return;
+    }
+    // GNOME starts a desktop file from the desktop only once it is trusted.
+    const QString gio = QStandardPaths::findExecutable(QStringLiteral("gio"));
+    QStringList places;
+    for (const QString& path : result.written)
+    {
+        if (gio.isEmpty() == false)
+        {
+            ProcessRunner::run(gio, { QStringLiteral("set"), path, QStringLiteral("metadata::trusted"), QStringLiteral("true") },
+                               HostEnvironment::host(), TRUST_TIMEOUT_MS, this, nullptr);
+        }
+        places.append(QFileInfo(path).absolutePath());
+    }
+    emit toast(result.error.isEmpty() ? tr("Shortcut created: %1").arg(places.join(QStringLiteral(", ")))
+                                      : tr("Shortcut created: %1 (%2)").arg(places.join(QStringLiteral(", ")), result.error));
 }
 
 void GamePage::chooseGameDir()
@@ -310,5 +418,6 @@ void GamePage::fillGpus()
         m_gpuRow->combo()->setItems(items);
         m_gpuRow->combo()->setValue(saved);
         m_savedGpu = saved;
+        emit gpusChanged(m_gpus);
     }, GPU_QUERY_TIMEOUT_MS);
 }

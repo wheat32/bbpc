@@ -1,5 +1,7 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <array>
+#include "shim/bb_env.h"
 #include <cstdlib>
 #include <mutex>
 
@@ -31,7 +33,7 @@ struct Paths
 
     Paths()
     {
-        const char* env = std::getenv("BB_GPU_USER_DIR");
+        const char* env = bb_env("BB_GPU_USER_DIR");
         const fs::path user = env != nullptr && *env ? fs::path{env} : fs::current_path() / "user";
         for (std::size_t i = 0; i < NUM_TYPES; ++i)
         {

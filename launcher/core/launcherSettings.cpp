@@ -10,7 +10,6 @@ void visitFields(LauncherSettings& s, Visitor&& visit)
     visit(QStringLiteral("game_dir"), s.gameDir);
     visit(QStringLiteral("user_dir"), s.userDir);
     visit(QStringLiteral("language"), s.language);
-    visit(QStringLiteral("memory_model"), s.memoryModel);
     visit(QStringLiteral("gpu"), s.gpu);
     visit(QStringLiteral("mods_dir"), s.modsDir);
     visit(QStringLiteral("mods_enabled"), s.modsEnabled);
@@ -21,17 +20,15 @@ void visitFields(LauncherSettings& s, Visitor&& visit)
     visit(QStringLiteral("display"), s.display);
     visit(QStringLiteral("gamepad"), s.gamepad);
     visit(QStringLiteral("gamepad_name"), s.gamepadName);
+    visit(QStringLiteral("mouse_auto_rotate"), s.mouseAutoRotate);
     visit(QStringLiteral("skip_network_choice"), s.skipNetworkChoice);
     visit(QStringLiteral("fps_mode"), s.fpsMode);
     visit(QStringLiteral("fps_limit"), s.fpsLimit);
     visit(QStringLiteral("draw_pipe"), s.drawPipe);
-    visit(QStringLiteral("readbacks"), s.readbacks);
-    visit(QStringLiteral("preupload"), s.preupload);
     visit(QStringLiteral("mangohud"), s.mangohud);
     visit(QStringLiteral("frame_stats"), s.frameStats);
     visit(QStringLiteral("save_log"), s.saveLog);
     visit(QStringLiteral("crash_diag"), s.crashDiag);
-    visit(QStringLiteral("as_0_3"), s.as03);
     visit(QStringLiteral("gpu_profile"), s.gpuProfile);
     visit(QStringLiteral("vk_validation"), s.vkValidation);
     visit(QStringLiteral("extra_env"), s.extraEnv);
@@ -47,7 +44,9 @@ void visitFields(LauncherSettings& s, Visitor&& visit)
     visit(QStringLiteral("thd_server"), s.thdServer);
     visit(QStringLiteral("thd_online_id"), s.thdOnlineId);
     visit(QStringLiteral("thd_token"), s.thdToken);
+    visit(QStringLiteral("trophy_key"), s.trophyKey);
     visit(QStringLiteral("fsr411_dll_dir"), s.fsr411DllDir);
+    visit(QStringLiteral("fsr411_dll"), s.fsr411Dll);
 }
 
 void readField(const QJsonObject& json, const QString& key, QString& field)

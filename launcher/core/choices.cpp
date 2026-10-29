@@ -1,6 +1,7 @@
 #include "choices.h"
 
 #include <QCoreApplication>
+#include <QStringList>
 
 namespace
 {
@@ -37,12 +38,16 @@ int Choices::indexOf(const QList<Choice>& choices, const QString& value)
 const QList<Choices::Choice>& Choices::upscalers()
 {
     static const QList<Choice> list = {
-        { "FSR 4", "fsr4" },
-        { "FSR 4.1.1", "fsr411" },
-        { "FSR 3", "fsr3" },
-        { "DLSS (NVIDIA RTX)", "dlss" },
-        { QT_TRANSLATE_NOOP("Choices", "TAA (native anti-aliasing)"), "taa" },
-        { QT_TRANSLATE_NOOP("Choices", "Off"), "off" },
+        { "FSR 4", "fsr4", QT_TRANSLATE_NOOP("Choices", "The best quality on AMD RDNA 3/4; slower on other GPUs") },
+        { "FSR 4.1.1", "fsr411", QT_TRANSLATE_NOOP("Choices", "AMD's newer model (needs your own AMD DLL, see below)") },
+        { "FSR 3.1", "fsr3", QT_TRANSLATE_NOOP("Choices", "A temporal upscaler for any GPU") },
+        { QT_TRANSLATE_NOOP("Choices", "FSR 1 (weak GPUs)"), "fsr1",
+          QT_TRANSLATE_NOOP("Choices", "Spatial: the cheapest (about 1 ms), no frame history; the game's post-processing "
+                                       "runs at the scene size. For laptops and the Steam Deck") },
+        { "DLSS (NVIDIA RTX)", "dlss", QT_TRANSLATE_NOOP("Choices", "Needs NVIDIA's library (see below)") },
+        { QT_TRANSLATE_NOOP("Choices", "TAA (native anti-aliasing)"), "taa",
+          QT_TRANSLATE_NOOP("Choices", "Anti-aliasing without a smaller resolution") },
+        { QT_TRANSLATE_NOOP("Choices", "Off"), "off", QT_TRANSLATE_NOOP("Choices", "The scene at the output resolution") },
     };
     return list;
 }
@@ -59,18 +64,61 @@ const QList<Choices::Choice>& Choices::presets()
     return list;
 }
 
-const QList<Choices::Choice>& Choices::memoryModels()
+const QList<Choices::Choice>& Choices::frameGenerations()
 {
     static const QList<Choice> list = {
-        { QT_TRANSLATE_NOOP("Choices", "Auto: new on every GPU"), "auto" },
-        { QT_TRANSLATE_NOOP("Choices", "New"), "new" },
-        { QT_TRANSLATE_NOOP("Choices", "Old (as in 0.3)"), "old" },
+        { QT_TRANSLATE_NOOP("Choices", "Off"), "off" },
+        { QT_TRANSLATE_NOOP("Choices", "FSR 3.1 (experimental)"), "fsr3",
+          QT_TRANSLATE_NOOP("Choices", "Any GPU; artifacts at the edges are possible") },
+        { "DLSS 2x (NVIDIA RTX 40/50)", "dlss2" },
+        { "DLSS 3x (NVIDIA RTX 50)", "dlss3" },
+        { "DLSS 4x (NVIDIA RTX 50)", "dlss4" },
     };
     return list;
 }
 
-// The game's text languages (dvdroot_ps4/msg) by the PS4 system language code.
-const QList<Choices::Choice>& Choices::gameLanguages()
+// NVIDIA Reflex (VK_NV_low_latency2) or AMD Anti-Lag 2 (VK_AMD_anti_lag): render/vk_low_latency.
+const QList<Choices::Choice>& Choices::lowLatency()
+{
+    static const QList<Choice> list = {
+        { QT_TRANSLATE_NOOP("Choices", "On"), "on" },
+        { QT_TRANSLATE_NOOP("Choices", "On + Boost"), "boost" },
+        { QT_TRANSLATE_NOOP("Choices", "Off"), "off" },
+    };
+    return list;
+}
+
+// bbport.ini anti_aliasing (BbSettings::AntiAliasing); the game's own AA switch follows it.
+const QList<Choices::Choice>& Choices::antiAliasing()
+{
+    static const QList<Choice> list = {
+        { QT_TRANSLATE_NOOP("Choices", "Auto"), "auto",
+          QT_TRANSLATE_NOOP("Choices", "The game's AA without an upscaler; off with one (it only blurs its input)") },
+        { QT_TRANSLATE_NOOP("Choices", "The game's own"), "game" },
+        { "FXAA2_GS", "fxaa", QT_TRANSLATE_NOOP("Choices", "The game's AA step running FXAA2_GS; applied at once") },
+        { QT_TRANSLATE_NOOP("Choices", "SMAA (no upscaler)"), "smaa",
+          QT_TRANSLATE_NOOP("Choices", "SMAA 1x on the finished scene; not with an upscaler") },
+        { QT_TRANSLATE_NOOP("Choices", "Off"), "off" },
+    };
+    return list;
+}
+
+// bbport.ini texture_quality (BbSettings::TextureQuality): large textures in VRAM.
+const QList<Choices::Choice>& Choices::textureQuality()
+{
+    static const QList<Choice> list = {
+        { QT_TRANSLATE_NOOP("Choices", "Auto"), "auto", QT_TRANSLATE_NOOP("Choices", "Half with 3 GB of VRAM or less, else full") },
+        { QT_TRANSLATE_NOOP("Choices", "Full"), "full" },
+        { QT_TRANSLATE_NOOP("Choices", "Half"), "half",
+          QT_TRANSLATE_NOOP("Choices", "Large textures half as big per side: 25-35% less image memory") },
+        { QT_TRANSLATE_NOOP("Choices", "Quarter"), "quarter",
+          QT_TRANSLATE_NOOP("Choices", "A quarter per side: even less memory, visibly blurrier up close") },
+    };
+    return list;
+}
+
+// The PS4 system language codes the game knows (its text in dvdroot_ps4/msg).
+const QList<Choices::Choice>& Choices::systemLanguages()
 {
     static const QList<Choice> list = {
         { QT_TRANSLATE_NOOP("Choices", "English"), "1" },
@@ -98,11 +146,50 @@ const QList<Choices::Choice>& Choices::gameLanguages()
     return list;
 }
 
-const QList<Choices::Choice>& Choices::liveResolution()
+// Any language the game's files have, whatever the copy's sell region and the save chose
+// (patches.py language_writes, issue #269).
+const QList<Choices::Choice>& Choices::gameTextLanguages()
 {
     static const QList<Choice> list = {
-        { QT_TRANSLATE_NOOP("Choices", "Off (faster)"), "0" },
-        { QT_TRANSLATE_NOOP("Choices", "On"), "1" },
+        { QT_TRANSLATE_NOOP("Choices", "As the game chooses"), "auto" },
+        { QT_TRANSLATE_NOOP("Choices", "English (US)"), "enus" },
+        { QT_TRANSLATE_NOOP("Choices", "English (UK)"), "engb" },
+        { QT_TRANSLATE_NOOP("Choices", "Russian"), "ruru" },
+        { QT_TRANSLATE_NOOP("Choices", "Japanese"), "jajp" },
+        { QT_TRANSLATE_NOOP("Choices", "French"), "frfr" },
+        { QT_TRANSLATE_NOOP("Choices", "Italian"), "itit" },
+        { QT_TRANSLATE_NOOP("Choices", "German"), "dede" },
+        { QT_TRANSLATE_NOOP("Choices", "Spanish"), "eses" },
+        { QT_TRANSLATE_NOOP("Choices", "Spanish (Latin America)"), "esar" },
+        { QT_TRANSLATE_NOOP("Choices", "Portuguese (Brazil)"), "ptbr" },
+        { QT_TRANSLATE_NOOP("Choices", "Portuguese"), "ptpt" },
+        { QT_TRANSLATE_NOOP("Choices", "Dutch"), "nlnl" },
+        { QT_TRANSLATE_NOOP("Choices", "Polish"), "plpl" },
+        { QT_TRANSLATE_NOOP("Choices", "Danish"), "dadk" },
+        { QT_TRANSLATE_NOOP("Choices", "Norwegian"), "nono" },
+        { QT_TRANSLATE_NOOP("Choices", "Finnish"), "fifi" },
+        { QT_TRANSLATE_NOOP("Choices", "Swedish"), "svse" },
+        { QT_TRANSLATE_NOOP("Choices", "Turkish"), "trtr" },
+        { QT_TRANSLATE_NOOP("Choices", "Chinese (Simplified)"), "zhcn" },
+        { QT_TRANSLATE_NOOP("Choices", "Chinese (Traditional)"), "zhtw" },
+        { QT_TRANSLATE_NOOP("Choices", "Korean"), "kokr" },
+    };
+    return list;
+}
+
+// The languages with voice files (sound/*.fsb): the first eight of patches.py GAME_LANGUAGES.
+const QList<Choices::Choice>& Choices::gameVoiceLanguages()
+{
+    static const QList<Choice> list = {
+        { QT_TRANSLATE_NOOP("Choices", "As the game chooses"), "auto" },
+        { QT_TRANSLATE_NOOP("Choices", "English"), "engb" },
+        { QT_TRANSLATE_NOOP("Choices", "Japanese"), "jajp" },
+        { QT_TRANSLATE_NOOP("Choices", "French"), "frfr" },
+        { QT_TRANSLATE_NOOP("Choices", "Italian"), "itit" },
+        { QT_TRANSLATE_NOOP("Choices", "German"), "dede" },
+        { QT_TRANSLATE_NOOP("Choices", "Spanish"), "eses" },
+        { QT_TRANSLATE_NOOP("Choices", "Spanish (Latin America)"), "esar" },
+        { QT_TRANSLATE_NOOP("Choices", "Portuguese (Brazil)"), "ptbr" },
     };
     return list;
 }
@@ -150,23 +237,15 @@ const QList<Choices::Choice>& Choices::drawPipe()
     return list;
 }
 
-const QList<Choices::Choice>& Choices::readbacks()
+// Issue #299 (runtime_pad/bindings.c button_prompts): the button icons of one device, whatever
+// is used.
+const QList<Choices::Choice>& Choices::buttonPrompts()
 {
     static const QList<Choice> list = {
-        { QT_TRANSLATE_NOOP("Choices", "Relaxed"), "", QT_TRANSLATE_NOOP("Choices", "The default") },
-        { QT_TRANSLATE_NOOP("Choices", "Off"), "0" },
-        { QT_TRANSLATE_NOOP("Choices", "Precise"), "2" },
-    };
-    return list;
-}
-
-// Background pre-upload of the game's GPU memory into VRAM (BB_PREUPLOAD).
-const QList<Choices::Choice>& Choices::preupload()
-{
-    static const QList<Choice> list = {
-        { QT_TRANSLATE_NOOP("Choices", "Normal"), "", QT_TRANSLATE_NOOP("Choices", "No extra VRAM") },
-        { QT_TRANSLATE_NOOP("Choices", "Full"), "2", QT_TRANSLATE_NOOP("Choices", "About 3 GB more VRAM") },
-        { QT_TRANSLATE_NOOP("Choices", "Off"), "0" },
+        { QT_TRANSLATE_NOOP("Choices", "Auto (the last device used)"), "auto" },
+        { "PlayStation", "playstation" },
+        { "Xbox", "xbox" },
+        { QT_TRANSLATE_NOOP("Choices", "Keyboard and mouse"), "keyboard" },
     };
     return list;
 }
@@ -192,19 +271,27 @@ const QList<Choices::Choice>& Choices::themes()
     return list;
 }
 
+// The game's own anti-aliasing (effect_game_aa) is no longer one of them: anti_aliasing sets it.
 const QList<Choices::Effect>& Choices::effects()
 {
     static const QList<Effect> list = {
-        { "effect_chromatic_aberration", QT_TRANSLATE_NOOP("Choices", "Chromatic aberration"), true },
-        { "effect_dof", QT_TRANSLATE_NOOP("Choices", "Depth of field (DoF)"), true },
-        { "effect_motion_blur", QT_TRANSLATE_NOOP("Choices", "Motion blur"), false },
-        { "effect_ssao", "SSAO", true },
-        { "effect_game_aa", QT_TRANSLATE_NOOP("Choices", "The game's own anti-aliasing"), true },
-        { "effect_dynamic_shadows", QT_TRANSLATE_NOOP("Choices", "Dynamic light shadows"), true },
-        { "effect_ssr", QT_TRANSLATE_NOOP("Choices", "SSR reflections (not in the original game)"), false },
-        { "effect_bloom", QT_TRANSLATE_NOOP("Choices", "Bloom"), true },
-        { "skip_intro", QT_TRANSLATE_NOOP("Choices", "Skip the intro videos"), false },
-        { "debug_camera", QT_TRANSLATE_NOOP("Choices", "Free camera (Cross + L3 / F + Left Ctrl)"), false },
+        { "effect_chromatic_aberration", QT_TRANSLATE_NOOP("Choices", "Chromatic aberration"), true,
+          QT_TRANSLATE_NOOP("Choices", "Color fringes at the frame's edges") },
+        { "effect_dof", QT_TRANSLATE_NOOP("Choices", "Depth of field (DoF)"), true,
+          QT_TRANSLATE_NOOP("Choices", "Blur of distant and near objects") },
+        { "effect_motion_blur", QT_TRANSLATE_NOOP("Choices", "Motion blur"), false,
+          QT_TRANSLATE_NOOP("Choices", "Blur when the camera turns fast") },
+        { "effect_ssao", QT_TRANSLATE_NOOP("Choices", "Ambient occlusion (SSAO)"), true,
+          QT_TRANSLATE_NOOP("Choices", "Shading in corners and creases") },
+        { "effect_dynamic_shadows", QT_TRANSLATE_NOOP("Choices", "Dynamic light shadows"), true,
+          QT_TRANSLATE_NOOP("Choices", "Shadows of torches and lanterns. Turning them off helps weak GPUs noticeably") },
+        { "effect_ssr", QT_TRANSLATE_NOOP("Choices", "SSR reflections (not in the original game)"), false,
+          QT_TRANSLATE_NOOP("Choices", "Screen-space reflections") },
+        { "effect_bloom", QT_TRANSLATE_NOOP("Choices", "Bloom"), true, QT_TRANSLATE_NOOP("Choices", "A glow around bright lights") },
+        { "skip_intro", QT_TRANSLATE_NOOP("Choices", "Skip the intro videos"), false,
+          QT_TRANSLATE_NOOP("Choices", "Straight to the main menu") },
+        { "debug_camera", QT_TRANSLATE_NOOP("Choices", "Free camera"), false,
+          QT_TRANSLATE_NOOP("Choices", "Cross + L3 (F + Left Ctrl on the keyboard)") },
         { "debug_menu", QT_TRANSLATE_NOOP("Choices", "Debug menu (left touchpad / Tab; needs fonts)"), false,
           QT_TRANSLATE_NOOP("Choices", "Needs the adhoc folder from Nexus mod #253 (fonts in adhoc/font), in the game's "
                                        "dvdroot_ps4 or as a mod; without it the patch is not applied") },
@@ -229,6 +316,7 @@ const QList<Choices::Control>& Choices::controls()
         { "circle", QT_TRANSLATE_NOOP("Choices", "Circle (dodge and run; on the keyboard: Space and Left Shift below)"), "", "b" },
         { "dodge", QT_TRANSLATE_NOOP("Choices", "Dodge (a short press of Circle; Shift+Space jumps)"), "Space", nullptr },
         { "sprint", QT_TRANSLATE_NOOP("Choices", "Run (Circle held)"), "Left Shift", nullptr },
+        { "walk", QT_TRANSLATE_NOOP("Choices", "Slow walk (held)"), "Left Alt", nullptr },
         { "square", QT_TRANSLATE_NOOP("Choices", "Square (quick item)"), "Tab, R", "x" },
         { "triangle", QT_TRANSLATE_NOOP("Choices", "Triangle (blood vial)"), "Q", "y" },
         { "l1", QT_TRANSLATE_NOOP("Choices", "L1 (transform the weapon)"), "E, Mouse X2", "leftshoulder" },
@@ -259,4 +347,27 @@ const QList<Choices::Control>& Choices::controls()
 QString Choices::label(const Control& control)
 {
     return translate(control.label);
+}
+
+QString Choices::addBinding(const QString& current, const QString& input)
+{
+    QStringList keys;
+    for (const QString& key : current.split(u','))
+    {
+        const QString trimmed = key.trimmed();
+        if (trimmed.isEmpty() == false)
+        {
+            keys.append(trimmed);
+        }
+    }
+    const QString added = input.trimmed();
+    if (added.isEmpty() == false && keys.contains(added) == false)
+    {
+        keys.append(added);
+    }
+    while (keys.size() > MAX_KEYS_PER_ACTION)
+    {
+        keys.removeFirst();
+    }
+    return keys.join(QStringLiteral(", "));
 }

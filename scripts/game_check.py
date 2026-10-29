@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright 2026 bbport contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
 """The game files bbport runs: Bloodborne with the 1.09 update merged in. The retail releases (the
 US CUSA00900, the European Game of the Year edition CUSA03173, the Asian The Old Hunters Edition
 CUSA03023, ...) share the same 1.09 executable.

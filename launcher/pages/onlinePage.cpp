@@ -2,7 +2,6 @@
 
 #include <QClipboard>
 #include <QDesktopServices>
-#include <QFileInfo>
 #include <QGuiApplication>
 #include <QHash>
 #include <QJsonArray>
@@ -29,7 +28,7 @@ const QString HUNTERS_DREAM = QStringLiteral("huntersdream");
 
 bool OnlinePage::hasOnlineModule()
 {
-    return QFileInfo(PortPaths::binariesDir() + QStringLiteral("/gpu/libbbnet20.so")).isFile();
+    return PortPaths::hasOnlineModule();
 }
 
 OnlinePage::OnlinePage(const LauncherSettings& settings, const PortIni&, QWidget* parent)
@@ -78,7 +77,11 @@ OnlinePage::OnlinePage(const LauncherSettings& settings, const PortIni&, QWidget
     m_coopGroup->addRow(m_webapiRow);
     m_bbscRow = new SwitchRow(tr("Seamless co-op (BBSC)"),
                               tr("The session survives deaths, lamps, area changes and bosses; up to 5 hunters. Needs a "
-                                 "server running the BBSC game server, and every player turns it on"),
+                                 "server running the BBSC game server, and every player turns it on. While it is on, the "
+                                 "game's bells are replaced by BBSC's; after turning it off the old ones come back at the "
+                                 "next character load (the save is copied to save-backups). When the server's own game "
+                                 "server does not answer, BBSC's runs on this PC (messages and bloodstains are then this "
+                                 "PC's only)"),
                               settings.onlineBbsc);
     connect(m_bbscRow, &SwitchRow::toggled, this, &OnlinePage::changed);
     m_coopGroup->addRow(m_bbscRow);
@@ -98,7 +101,7 @@ OnlinePage::OnlinePage(const LauncherSettings& settings, const PortIni&, QWidget
 
     m_thdGroup = new SettingsGroup(QStringLiteral("The Hunter's Dream"),
                                    tr("Discord sign-in as in bbhost: confirm a code on the website. No password; the "
-                                      "token is kept on this computer with the launcher settings"));
+                                      "token is kept on this computer with the launcher settings. No BBSC in this pool"));
     m_thdServerRow = new EntryRow(tr("Server address"), settings.thdServer);
     m_thdServerRow->setPlaceholder(OnlineAddresses::HUNTERS_DREAM_SERVER);
     connect(m_thdServerRow, &EntryRow::textEdited, this, &OnlinePage::changed);

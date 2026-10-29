@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport render: the pipeline cache on disk, one file per blob in the user's cache directory
 // under the game's serial (name.meta: shader metadata, name.spv: SPIR-V, name.key: pipeline keys,
@@ -26,6 +27,8 @@ enum class BlobType : u32
     ShaderBinary,
     PipelineKey,
     ShaderProfile,
+    /// A compilation's inputs (shader_capture.h TakeInput): kept when the cache is cleared.
+    ShaderInput,
 };
 
 class BlobStore
@@ -37,6 +40,8 @@ public:
     /// Writes what is queued, then stops the writer.
     void Close();
     [[nodiscard]] bool IsOpened() const { return opened; }
+    /// The game's cache directory (after Open).
+    [[nodiscard]] const std::filesystem::path& Directory() const { return dir; }
     /// Loading at start is done (kept for the callers' order; files need no switch).
     void FinishPreload() {}
     /// Removes every blob: an incompatible cache is rebuilt, not ignored.

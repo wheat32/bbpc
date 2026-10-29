@@ -52,6 +52,22 @@ private slots:
         QCOMPARE(json.value(QStringLiteral("online_server")).toString(), OnlineAddresses::SHADNET_SERVER);
     }
 
+    void fromJson_removedSettings_areKeptButNotRead()
+    {
+        // 0.7 has one memory model and no 0.3 synchronization: older keys stay in the file.
+        const QJsonObject json {
+            { QStringLiteral("memory_model"), QStringLiteral("old") },
+            { QStringLiteral("as_0_3"), true },
+            { QStringLiteral("trophy_key"), QStringLiteral("00112233445566778899aabbccddeeff") },
+        };
+        const LauncherSettings settings = LauncherSettings::fromJson(json);
+        QCOMPARE(settings.trophyKey, QStringLiteral("00112233445566778899aabbccddeeff"));
+        QVERIFY(settings.mouseAutoRotate == false);
+        const QJsonObject saved = settings.toJson();
+        QCOMPARE(saved.value(QStringLiteral("memory_model")).toString(), QStringLiteral("old"));
+        QCOMPARE(saved.value(QStringLiteral("trophy_key")).toString(), settings.trophyKey);
+    }
+
     void pool_oldPoolNames_areSeamlessHunt()
     {
         LauncherSettings settings;

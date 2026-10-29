@@ -106,6 +106,27 @@ private slots:
                  QStringLiteral("310.10.0"));
     }
 
+    void ngxLibraries_frameGeneration_isItsOwnKind()
+    {
+        QTemporaryDir dir;
+        writeFile(dir.filePath(UpscalerAssets::NGX_PREFIX + QStringLiteral("310.4.0")), SPIRV_SIZE);
+        writeFile(dir.filePath(UpscalerAssets::NGX_FG_PREFIX + QStringLiteral("310.7.0")), SPIRV_SIZE);
+        const QFileInfoList upscaling = UpscalerAssets::ngxLibraries(dir.path());
+        const QFileInfoList frames = UpscalerAssets::ngxLibraries(dir.path(), UpscalerAssets::NGX_FG_PREFIX);
+        QCOMPARE(upscaling.size(), 1);
+        QCOMPARE(frames.size(), 1);
+        QCOMPARE(UpscalerAssets::ngxVersion(frames.first()), QStringLiteral("310.7.0"));
+        QCOMPARE(UpscalerAssets::ngxVersion(UpscalerAssets::ngxInUse(dir.path(), {}, UpscalerAssets::NGX_FG_PREFIX)),
+                 QStringLiteral("310.7.0"));
+    }
+
+    void ngxPrefixOf_names_tellTheKind()
+    {
+        QCOMPARE(UpscalerAssets::ngxPrefixOf(QStringLiteral("libnvidia-ngx-dlssg.so.310.7.0")), UpscalerAssets::NGX_FG_PREFIX);
+        QCOMPARE(UpscalerAssets::ngxPrefixOf(QStringLiteral("libnvidia-ngx-dlss.so.310.4.0")), UpscalerAssets::NGX_PREFIX);
+        QVERIFY(UpscalerAssets::ngxPrefixOf(QStringLiteral("nvngx_dlss.dll")).isEmpty());
+    }
+
     void ngxInUse_noLibrary_isEmpty()
     {
         QTemporaryDir own;

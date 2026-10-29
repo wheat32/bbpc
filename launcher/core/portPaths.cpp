@@ -2,7 +2,10 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QStandardPaths>
 
 namespace
@@ -129,4 +132,34 @@ QString PortPaths::python()
 {
     const QString explicitPython = qEnvironmentVariable("PYTHON");
     return explicitPython.isEmpty() ? QStringLiteral("python3") : explicitPython;
+}
+
+bool PortPaths::hasOnlineModule(const QString& netModule, const QString& binariesDir)
+{
+    if (netModule.isEmpty() == false)
+    {
+        return QFileInfo(netModule).isFile();
+    }
+    return QFileInfo(binariesDir + QStringLiteral("/gpu/libbbnet20.so")).isFile();
+}
+
+bool PortPaths::hasOnlineModule()
+{
+    return hasOnlineModule(qEnvironmentVariable("BB_NET_MODULE"), binariesDir());
+}
+
+QString PortPaths::upstreamVersion(const QByteArray& versionJson)
+{
+    const QJsonObject json = QJsonDocument::fromJson(versionJson).object();
+    return json.value(QStringLiteral("upstream_version")).toString().trimmed();
+}
+
+QString PortPaths::portVersion()
+{
+    QFile file(QStringLiteral(":/version.json"));
+    if (file.open(QIODevice::ReadOnly) == false)
+    {
+        return {};
+    }
+    return upstreamVersion(file.readAll());
 }

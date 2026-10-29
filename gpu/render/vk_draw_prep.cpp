@@ -1,7 +1,9 @@
+// SPDX-FileCopyrightText: Copyright 2026 bbport contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: speculative draw preparation on worker threads (see vk_draw_prep.h).
 
 #include <algorithm>
+#include "shim/bb_env.h"
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -13,6 +15,8 @@
 #include "cp/command_processor.h"
 #include "render/vk_draw_prep.h"
 #include "render/gcn_to_vk.h"
+#include "render/pipeline_cache.h"
+#include "vulkan/instance.h"
 #include <xxhash.h>
 
 namespace Vulkan
@@ -20,6 +24,8 @@ namespace Vulkan
 
 namespace
 {
+// The workers' wait for work between checks.
+constexpr std::chrono::milliseconds WORKER_POLL{1}; // Common::WaitFor: no spin on Windows
 
 bool IsDirectDraw(BbCp::Op opcode)
 {
@@ -89,19 +95,26 @@ void AppendFlattened(std::vector<u32>& out, std::span<const u32> commands, u32 d
     }
 }
 
-u32 DefaultWorkerCount()
+u32 DefaultWorkerCount(bool integrated)
 {
-    const char* env = std::getenv("BB_PREP_WORKERS");
+    const char* env = bb_env("BB_PREP_WORKERS");
     if (env != nullptr)
     {
         return static_cast<u32>(std::clamp(std::atoi(env), 0, 16));
     }
     // Workers are SCHED_IDLE and claim whole buffers, but more of them were slower: CPU-bound
     // (upstream docs/pipeline_4stage.ru.md, three interleaved runs each) 16 threads with 4 workers +5%
-    // over 8, 4 cores / 8 threads with 1 worker +4% over 4. A quarter of the hardware threads
-    // from 12 (16-thread desktop 4), else one (Steam Deck).
+    // over 8 (and +27 % over none, 2026-10-25). A quarter of the hardware threads from 12, one
+    // from 8, none below 8 or with a GPU sharing the CPU's power (Steam Deck: one worker prepared
+    // only ~13 % of the draws in time, the GPU thread did the rest again, and its CPU time came
+    // out of the 15 W budget: 68.6 -> 70.7 FPS, GPU clock 1345 -> 1378 MHz without it; a 4-thread
+    // laptop: 30.0 -> 31.9 FPS).
     const u32 available = BbThreads::Available();
-    return available >= 12 ? std::min<u32>(available / 4, 8) : 1;
+    if (available >= 12)
+    {
+        return std::min<u32>(available / 4, 8);
+    }
+    return available >= 8 && integrated == false ? 1 : 0;
 }
 
 /// Flattened user data of one submission: chunks never move, so the GPU thread can read a
@@ -261,7 +274,7 @@ void PrepareVertexInputs(const Shader::Info& vs, const Shader::Gcn::FetchShaderD
 
 DrawPreparation::DrawPreparation(PipelineCache& pipeline_cache_) : pipeline_cache{pipeline_cache_}
 {
-    worker_count = DefaultWorkerCount();
+    worker_count = DefaultWorkerCount(pipeline_cache_.GetInstance().IsIntegrated());
     if (worker_count)
     {
         scanner = std::jthread(
@@ -497,13 +510,17 @@ void DrawPreparation::ScannerLoop(std::stop_token stop)
             std::unique_lock lk{mutex};
             // Woken by Enqueue, and every millisecond (its notification may come between the
             // check and the wait: it does not take `mutex`).
-            while (cv.wait_for(lk, stop, std::chrono::milliseconds(1),
-                               [&]
-                               {
-                                   TakeIntakeLocked();
-                                   return next_seq < tail_seq ||
-                                          (submissions.empty() == false && submissions.back()->seq >= next_seq);
-                               }) == false)
+            while (Common::WaitFor(cv, lk, WORKER_POLL,
+                                   [&]
+                                   {
+                                       if (stop.stop_requested())
+                                       {
+                                           return true;
+                                       }
+                                       TakeIntakeLocked();
+                                       return next_seq < tail_seq ||
+                                              (submissions.empty() == false && submissions.back()->seq >= next_seq);
+                                   }) == false)
             {
                 if (stop.stop_requested())
                 {
@@ -585,13 +602,17 @@ void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index)
         {
             std::unique_lock lk{mutex};
             // gpu_seq moves without the lock: keep the candidate the predicate found.
-            while (cv.wait_for(lk, stop, std::chrono::milliseconds(1),
-                               [&]
-                               {
-                                   TakeIntakeLocked();
-                                   target = baseline_ready ? claimable() : nullptr;
-                                   return target != nullptr;
-                               }) == false)
+            while (Common::WaitFor(cv, lk, WORKER_POLL,
+                                   [&]
+                                   {
+                                       if (stop.stop_requested())
+                                       {
+                                           return true;
+                                       }
+                                       TakeIntakeLocked();
+                                       target = baseline_ready ? claimable() : nullptr;
+                                       return target != nullptr;
+                                   }) == false)
             {
                 if (stop.stop_requested())
                 {
@@ -686,7 +707,7 @@ void DrawPreparation::Count(bool was_used, Miss why)
     {
         ++misses[why];
     }
-    static const bool stats = std::getenv("BB_FRAME_STATS") != nullptr;
+    static const bool stats = bb_env("BB_FRAME_STATS") != nullptr;
     // The clock is read every 1024 draws: per draw it was 8% of the GPU thread.
     if (stats == false || ((used + unused) & 1023) != 0)
     {

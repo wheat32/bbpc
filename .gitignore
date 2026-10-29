@@ -72,6 +72,9 @@ vkd3d-proton.cache
 tools/fsr4cap/bin/
 # NVIDIA's DLSS SDK (tools/fetch_dlss_sdk.sh)
 /dlss-sdk/
+# The shader recipe pack and image shapes a release carries (docs/shader_recipes.md), made locally
+/shader_recipes.bin
+/image_shapes.txt
 
 # Captures and leftovers: videos, screenshots, patch backups, generated SPIR-V, archives
 *.mp4
